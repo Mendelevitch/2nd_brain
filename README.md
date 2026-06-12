@@ -75,7 +75,7 @@ pip3 install python-telegram-bot[job-queue] openai anthropic \
 
 **Option A — fresh start:** open `templates/onboarding-cowork.md` in Cowork. It will interview you and create your `user-model.md` and seed your wiki.
 
-**Option B — migrating from ChatGPT:** use `templates/import-from-chatgpt.md` to extract your user model from your ChatGPT history first, then run the Cowork onboarding to seed your wiki.
+**Option B — migrating from ChatGPT or Claude:** use `templates/import-from-chatgpt.md` or `templates/import-from-claude.md` to extract your user model from your conversation history first, then run the Cowork onboarding to seed your wiki.
 
 ### 5. Install as services (Raspberry Pi)
 
@@ -175,6 +175,7 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 ├── templates/
 │   ├── onboarding-cowork.md    ← setup prompt (run this first)
 │   ├── import-from-chatgpt.md  ← extract user model from ChatGPT history
+│   ├── import-from-claude.md   ← extract user model from Claude history
 │   ├── user-model.md           ← blank user model template
 │   └── guests.example.json
 └── docs/
