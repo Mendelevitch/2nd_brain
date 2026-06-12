@@ -1,16 +1,30 @@
-# Import your user model from ChatGPT
+# Build your user model
 
-If you've been using ChatGPT for a while, it already knows a lot about you. Use this prompt to extract that knowledge into a structured user model for 2ND Brain.
+Your user model tells the Mind Bot who you are, how you think, and how to talk to you. The more accurate it is, the better the bot.
 
-## How to use
-
-1. Open a ChatGPT conversation (ideally one of your longer or older ones)
-2. Paste the prompt below
-3. Copy the output into `user/user-model.md` in your brain directory
+Pick the path that fits you:
 
 ---
 
-## Prompt
+## Option A — You've been using ChatGPT
+
+1. Open any substantial ChatGPT conversation
+2. Paste the prompt below
+3. Copy the output into `user/user-model.md`
+
+## Option B — You've been using Claude
+
+1. Open any substantial Claude conversation
+2. Paste the prompt below
+3. Copy the output into `user/user-model.md`
+
+## Option C — Starting fresh
+
+Open `onboarding-cowork.md` in Cowork and point it at your brain directory. It will interview you and fill everything in.
+
+---
+
+## The prompt (for Options A and B)
 
 ```
 Based on everything you know about me from our conversations, write a structured user model for a personal AI assistant. Be specific and concrete — use things I've actually said, not generic descriptions.
@@ -48,5 +62,5 @@ Be honest and specific. If you're not sure about something, say so rather than i
 ## After you get the output
 
 1. Save it as `user/user-model.md`
-2. Read it yourself — correct anything that's wrong or outdated
-3. Also create a shorter `user/user-model-public.md` — same structure but remove anything too personal (current projects, specific beliefs, contact info). This version is shown to guests.
+2. Read it — correct anything wrong or outdated
+3. Create a shorter `user/user-model-public.md` — same structure, but remove anything too personal (current projects, specific beliefs). This version is shown to guests.
