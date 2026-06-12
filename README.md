@@ -145,8 +145,7 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 | `prompts/translate.md` | Hourly / after capturing | Processes `/raw` into wiki entries |
 | `prompts/research.md` | Every Monday ~2:00 | Finds gaps in the wiki, researches and fills them |
 | `prompts/weekly-planning.md` | Every Monday ~9:30 | Reviews todos, suggests the week's tasks |
-| `prompts/weekly-digest.md` | Every Friday ~12:00 | Digest of interesting ideas and patterns from the week |
-| `prompts/wiki-curate.md` | Every Friday ~12:15 | Strengthens links between wiki pages |
+| `prompts/wiki-curate.md` | Every Friday | Strengthens links between wiki pages |
 
 ---
 
