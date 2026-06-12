@@ -140,11 +140,13 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 
 ## Cowork prompts
 
-| Prompt | When to run | What it does |
+| Prompt | Schedule | What it does |
 |---|---|---|
-| `prompts/translate.md` | Daily or after capturing | Processes `/raw` into wiki entries |
-| `prompts/wiki-curate.md` | Weekly | Strengthens links between wiki pages |
-| `prompts/weekly-planning.md` | Monday morning | Reviews todos, suggests the week's tasks |
+| `prompts/translate.md` | Hourly / after capturing | Processes `/raw` into wiki entries |
+| `prompts/research.md` | Every Monday ~2:00 | Finds gaps in the wiki, researches and fills them |
+| `prompts/weekly-planning.md` | Every Monday ~9:30 | Reviews todos, suggests the week's tasks |
+| `prompts/weekly-digest.md` | Every Friday ~12:00 | Digest of interesting ideas and patterns from the week |
+| `prompts/wiki-curate.md` | Every Friday ~12:15 | Strengthens links between wiki pages |
 
 ---
 
