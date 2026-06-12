@@ -1,0 +1,11 @@
+[Unit]
+Description=Auto-restart bots when source files change
+After=network.target
+
+[Service]
+ExecStart=/bin/bash /mnt/hdd/Misha_pi/brain/_Claude/watch_bots.sh
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

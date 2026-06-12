@@ -1,0 +1,11 @@
+[Unit]
+Description=Brain Telegram Bot
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /mnt/hdd/Misha_pi/brain/_Claude/brain_bot.py
+Restart=always
+User=pi
+
+[Install]
+WantedBy=multi-user.target
