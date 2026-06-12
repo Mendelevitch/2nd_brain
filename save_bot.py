@@ -43,48 +43,6 @@ def extract_url(text):
     urls = re.findall(pattern, text or "")
     return urls[0] if urls else None
 
-def parse_json3(raw):
-    try:
-        data = json.loads(raw)
-        words = []
-        for event in data.get('events', []):
-            for seg in event.get('segs', []):
-                utf8 = seg.get('utf8', '').strip()
-                if utf8 and utf8 != '\n':
-                    words.append(utf8)
-        return ' '.join(words)
-    except:
-        return None
-
-def get_youtube(url):
-    try:
-        import yt_dlp
-        with yt_dlp.YoutubeDL({'skip_download': True, 'quiet': True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            title = info.get('title', '')
-            description = info.get('description', '')[:500]
-            auto_captions = info.get('automatic_captions', {})
-            transcript = ""
-            lang_used = ""
-            for lang in ['en', 'ru']:
-                subs = auto_captions.get(lang, [])
-                for fmt in subs:
-                    if fmt.get('ext') == 'json3':
-                        sub_url = fmt.get('url')
-                        with urllib.request.urlopen(sub_url) as r:
-                            raw = r.read().decode('utf-8')
-                        transcript = parse_json3(raw)
-                        lang_used = lang
-                        break
-                if transcript:
-                    break
-            if transcript:
-                return title, f"YouTube transcript ({lang_used}):\n\n{transcript[:30000]}"
-            else:
-                return title, f"YouTube video (no subtitles)\n\n{description}"
-    except:
-        return None, None
-
 def scrape_url(url):
     # Try markitdown first (handles web pages, YouTube, PDFs, etc.)
     try:
@@ -189,6 +147,26 @@ Reply with JSON array only:"""}]
         logging.warning(f"parse_todo failed: {e}")
         return [{"title": text[:100], "deadline": None, "priority": None}]
 
+def write_sync_flag(filepath, flag):
+    """Insert 'flag: synced' into front matter of an existing .md file."""
+    try:
+        with open(filepath, "r") as f:
+            content = f.read()
+        # Find end of front matter (first blank line)
+        lines = content.split("\n")
+        insert_at = None
+        for i, line in enumerate(lines):
+            if i > 0 and line.strip() == "":
+                insert_at = i
+                break
+        if insert_at is None:
+            insert_at = len(lines)
+        lines.insert(insert_at, f"{flag}: synced")
+        with open(filepath, "w") as f:
+            f.write("\n".join(lines))
+    except Exception as e:
+        logging.warning(f"write_sync_flag failed: {e}")
+
 def add_notion_task(title, deadline=None, priority=None, source=None):
     """Add a task to Notion database."""
     try:
@@ -277,7 +255,7 @@ def mark_notion_done(page_id):
         logging.warning(f"mark_notion_done failed: {e}")
         return False
 
-def scan_for_hidden_todos(text, source):
+def scan_for_hidden_todos(text, source, fpath=None):
     """Scan text for explicit action items and add them to Notion."""
     if not text or len(text) < 10:
         return
@@ -301,10 +279,14 @@ Reply with JSON only:"""}]
         if not match:
             return
         items = json.loads(match.group(0))
+        synced = False
         for item in items:
             if item.get("title"):
-                add_notion_task(item["title"], item.get("deadline"), None, source)
+                if add_notion_task(item["title"], item.get("deadline"), None, source):
+                    synced = True
                 logging.info(f"scan_for_hidden_todos: found '{item['title']}'")
+        if synced and fpath:
+            write_sync_flag(fpath, "notion")
     except Exception as e:
         logging.warning(f"scan_for_hidden_todos failed: {e}")
 
@@ -362,16 +344,22 @@ async def flush_media_group(group_id):
         if combined:
             category = detect_category(combined)
             content = f"category: {category}\nsource: photo_album\ndate: {timestamp}\nphotos: {count}\n\n{combined}"
+            fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
             if category == "todo":
-                for todo in parse_todo(combined):
+                synced = any(
                     add_notion_task(todo["title"], todo.get("deadline"), todo.get("priority"), "text")
+                    for todo in parse_todo(combined)
+                )
+                if synced:
+                    write_sync_flag(fpath, "notion")
             else:
-                scan_for_hidden_todos(combined, "text")
+                scan_for_hidden_todos(combined, "text", fpath)
         else:
             category = "cool"
             content = f"category: {category}\nsource: photo_album\ndate: {timestamp}\nphotos: {count}\n\n(no text extracted)"
+            fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
 
-    with open(os.path.join(RAW_DIR, f"{timestamp}_{category}.md"), "w") as f:
+    with open(fpath, "w") as f:
         f.write(content)
     label = f"album ({count})" if count > 1 else "photo"
     if last_chat_id:
@@ -398,7 +386,8 @@ async def flush_batch():
 
     content = f"category: {category}\ndate: {timestamp}\n\n{combined}"
     filename = f"{timestamp}_{category}.md"
-    with open(os.path.join(RAW_DIR, filename), "w") as f:
+    fpath = os.path.join(RAW_DIR, filename)
+    with open(fpath, "w") as f:
         f.write(content)
 
     count = batch_count
@@ -407,10 +396,14 @@ async def flush_batch():
     batch_task = None
 
     if category == "todo":
-        for todo in parse_todo(combined):
+        synced = any(
             add_notion_task(todo["title"], todo.get("deadline"), todo.get("priority"), "text")
+            for todo in parse_todo(combined)
+        )
+        if synced:
+            write_sync_flag(fpath, "notion")
     elif category == "link":
-        scan_for_hidden_todos(combined, "text")
+        scan_for_hidden_todos(combined, "text", fpath)
 
     if last_bot and last_chat_id:
         msg = f"✓ {category}" if count == 1 else f"✓ batch of {count} → {category}"
@@ -444,13 +437,18 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = transcribe(ogg_path)
         if text:
             category = detect_category(text)
+            fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
             content = f"category: {category}\nsource: self_voice\ndate: {timestamp}\n\n{text}"
-            with open(os.path.join(RAW_DIR, f"{timestamp}_{category}.md"), "w") as f:
+            with open(fpath, "w") as f:
                 f.write(content)
             os.remove(ogg_path)
             if category == "todo":
-                for todo in parse_todo(text):
+                synced = any(
                     add_notion_task(todo["title"], todo.get("deadline"), todo.get("priority"), "voice")
+                    for todo in parse_todo(text)
+                )
+                if synced:
+                    write_sync_flag(fpath, "notion")
             await msg.reply_text(f"✓ {category}\n\n{text[:200]}")
         else:
             await msg.reply_text("✓ saved")
@@ -497,14 +495,19 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted = await ocr_photo_file(msg.photo[-1].file_id, context.bot)
         if extracted:
             category = detect_category(extracted)
+            fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
             content = f"category: {category}\nsource: photo\ndate: {timestamp}\n\n{extracted}"
-            with open(os.path.join(RAW_DIR, f"{timestamp}_{category}.md"), "w") as f:
+            with open(fpath, "w") as f:
                 f.write(content)
             if category == "todo":
-                for todo in parse_todo(extracted):
+                synced = any(
                     add_notion_task(todo["title"], todo.get("deadline"), todo.get("priority"), "text")
+                    for todo in parse_todo(extracted)
+                )
+                if synced:
+                    write_sync_flag(fpath, "notion")
             else:
-                scan_for_hidden_todos(extracted, "text")
+                scan_for_hidden_todos(extracted, "text", fpath)
             await msg.reply_text(f"✓ {category}\n\n{extracted[:200]}")
         else:
             # No text — save jpg as-is
@@ -529,9 +532,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.rename(file_path, archive_path)
                 category = detect_category(result.text_content[:500])
                 content = f"category: {category}\nsource: document\nfilename: {orig_name}\ndate: {timestamp}\n\n{result.text_content}"
-                with open(os.path.join(RAW_DIR, f"{timestamp}_{category}.md"), "w") as f:
+                doc_fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
+                with open(doc_fpath, "w") as f:
                     f.write(content)
-                scan_for_hidden_todos(result.text_content[:1000], "text")
+                scan_for_hidden_todos(result.text_content[:1000], "text", doc_fpath)
                 await msg.reply_text(f"✓ {category} (converted from {orig_name})")
                 converted = True
         except ImportError:
@@ -551,13 +555,18 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             category = detect_category(msg.text)
             content = f"category: {category}\nsource: self_text\ndate: {timestamp}\n\n{msg.text}"
-            with open(os.path.join(RAW_DIR, f"{timestamp}_{category}.md"), "w") as f:
+            fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
+            with open(fpath, "w") as f:
                 f.write(content)
             if category == "todo":
-                for todo in parse_todo(msg.text):
+                synced = any(
                     add_notion_task(todo["title"], todo.get("deadline"), todo.get("priority"), "text")
+                    for todo in parse_todo(msg.text)
+                )
+                if synced:
+                    write_sync_flag(fpath, "notion")
             else:
-                scan_for_hidden_todos(msg.text, "text")
+                scan_for_hidden_todos(msg.text, "text", fpath)
             await msg.reply_text(f"✓ {category}")
             return
 

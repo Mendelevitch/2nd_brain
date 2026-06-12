@@ -1,0 +1,11 @@
+[Unit]
+Description=ChatBot — Telegram conversation bot
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /path/to/your/brain/_Claude/chat_bot.py
+Restart=always
+User=pi
+
+[Install]
+WantedBy=multi-user.target

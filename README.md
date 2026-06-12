@@ -3,11 +3,11 @@
 A personal second brain running on a Raspberry Pi — two Telegram bots, a local wiki synced to your Mac, and a set of Cowork prompts that process everything weekly.
 
 ```
-You → Telegram → Brain Bot → /raw → Cowork → /wiki → Mind Bot → You
+You → Telegram → SaveBot → /raw → Cowork → /wiki → ChatBot → You
 ```
 
-**Brain Bot** captures everything: voice memos, photos, links, documents, forwarded messages.  
-**Mind Bot** lets you have a conversation with your own knowledge base.
+**SaveBot** captures everything: voice memos, photos, links, documents, forwarded messages.  
+**ChatBot** lets you have a conversation with your own knowledge base — including in Telegram group chats.
 
 ---
 
@@ -20,8 +20,9 @@ You → Telegram → Brain Bot → /raw → Cowork → /wiki → Mind Bot → Yo
 - **Text** → categorised into `idea / thought / todo / event / case / link / cool / question / reference`
 - **Forwarded messages** → saved with author attribution, scanned for action items
 
-**Mind Bot** features:
-- Two-pass wiki search (index scan → full file load)
+**ChatBot** features:
+- Two-pass wiki search (index scan → full file load) across `/wiki` and `/projects`
+- Group chat support — @mention the bot in a group; it remembers context across the conversation
 - `/think` — deeper mode using Claude Sonnet, acts as a sparring partner
 - `/browse` — adds DuckDuckGo results to context
 - Guest mode — friends get their own conversation channel with your bot
@@ -81,8 +82,8 @@ See `templates/build-user-model.md` — three paths depending on your situation:
 # Edit services/*.service — replace /mnt/hdd/Misha_pi/brain/_Claude with your path
 sudo cp services/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable brain-bot mind-bot watch-bots
-sudo systemctl start brain-bot mind-bot watch-bots
+sudo systemctl enable save-bot chat-bot watch-bots
+sudo systemctl start save-bot chat-bot watch-bots
 ```
 
 ### 6. Set up Syncthing (optional)
@@ -107,8 +108,8 @@ Raspberry Pi
 │   ├── insights/     ← weekly digests
 │   ├── guest_chats/  ← Mind Bot guest conversations
 │   └── user/         ← user-model.md, user-model-public.md
-├── brain_bot.py
-├── mind_bot.py
+├── save_bot.py
+├── chat_bot.py
 └── config.py         ← your secrets (gitignored)
 
 Mac (via Syncthing)
@@ -164,8 +165,8 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 
 ```
 2nd-brain/
-├── brain_bot.py           ← capture bot
-├── mind_bot.py            ← chat bot
+├── save_bot.py            ← capture bot
+├── chat_bot.py            ← chat bot (private + group chats)
 ├── config.example.py      ← configuration template
 ├── watch_bots.sh          ← auto-restarts bots on file change
 ├── requirements.txt
