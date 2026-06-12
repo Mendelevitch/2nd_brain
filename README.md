@@ -39,8 +39,8 @@ You → Telegram → Brain Bot → /raw → Cowork → /wiki → Mind Bot → Yo
 
 - Raspberry Pi 4 or 5 (2 GB+ RAM)
 - Python 3.11+
-- A Mac or PC synced via Syncthing (optional but recommended)
-- Cowork or Claude.ai for running the weekly prompts
+- [Cowork](https://cowork.ai) — required for running the processing prompts
+- A Mac or PC for running Cowork, synced to the Pi via Syncthing
 - Telegram account
 
 ---
@@ -73,7 +73,7 @@ pip3 install python-telegram-bot[job-queue] openai anthropic \
 
 ### 4. Run the onboarding prompt
 
-Open `templates/onboarding-cowork.md` in Cowork (or Claude.ai) and point it at your brain directory. It will interview you and create your `user-model.md`.
+Open `templates/onboarding-cowork.md` in Cowork and point it at your brain directory. It will interview you and create your `user-model.md` and seed your wiki.
 
 ### 5. Install as services (Raspberry Pi)
 
@@ -171,9 +171,8 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 ├── services/              ← systemd service files
 ├── prompts/               ← Cowork process prompts
 ├── templates/
-│   ├── onboarding-cowork.md       ← setup prompt for Cowork
-│   ├── onboarding-chatgpt.md      ← setup prompt for ChatGPT
-│   ├── user-model.md              ← blank user model template
+│   ├── onboarding-cowork.md  ← setup prompt (run this first)
+│   ├── user-model.md         ← blank user model template
 │   └── guests.example.json
 └── docs/
     ├── setup-syncthing.md
