@@ -71,9 +71,11 @@ pip3 install python-telegram-bot[job-queue] openai anthropic \
              "markitdown[all]" --break-system-packages
 ```
 
-### 4. Run the onboarding prompt
+### 4. Build your user model
 
-Open `templates/onboarding-cowork.md` in Cowork and point it at your brain directory. It will interview you and create your `user-model.md` and seed your wiki.
+**Option A — fresh start:** open `templates/onboarding-cowork.md` in Cowork. It will interview you and create your `user-model.md` and seed your wiki.
+
+**Option B — migrating from ChatGPT:** use `templates/import-from-chatgpt.md` to extract your user model from your ChatGPT history first, then run the Cowork onboarding to seed your wiki.
 
 ### 5. Install as services (Raspberry Pi)
 
@@ -171,8 +173,9 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 ├── services/              ← systemd service files
 ├── prompts/               ← Cowork process prompts
 ├── templates/
-│   ├── onboarding-cowork.md  ← setup prompt (run this first)
-│   ├── user-model.md         ← blank user model template
+│   ├── onboarding-cowork.md    ← setup prompt (run this first)
+│   ├── import-from-chatgpt.md  ← extract user model from ChatGPT history
+│   ├── user-model.md           ← blank user model template
 │   └── guests.example.json
 └── docs/
     ├── setup-syncthing.md
