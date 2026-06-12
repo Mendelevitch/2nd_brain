@@ -79,7 +79,7 @@ See `templates/build-user-model.md` — three paths depending on your situation:
 ### 5. Install as services (Raspberry Pi)
 
 ```bash
-# Edit services/*.service — replace /mnt/hdd/Misha_pi/brain/_Claude with your path
+# Edit services/*.service — replace /path/to/your/brain/_Claude with your actual path
 sudo cp services/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable save-bot chat-bot watch-bots
