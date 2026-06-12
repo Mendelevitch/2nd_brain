@@ -21,9 +21,10 @@ OPENAI_API_KEY = ""
 OWNER_ID = 0
 
 # ── Paths ─────────────────────────────────────────────────
-# Directory where your brain data lives on the Pi.
-# Must contain: raw/, wiki/, archive/, insights/, user/, guest_chats/
-BRAIN_DIR = "/path/to/your/brain"
+# If running with Docker (docker-compose up), use:
+BRAIN_DIR = "/brain"
+# If running directly on a Pi or Mac, use the actual path:
+# BRAIN_DIR = "/path/to/your/brain"
 
 # ── Optional: Notion integration ─────────────────────────
 # Leave empty strings to disable.
