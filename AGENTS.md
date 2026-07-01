@@ -34,7 +34,7 @@ brain/
 ## Before Anything Else
 
 1. Read `README.md` — one-paragraph overview.
-2. Read `/user/user-model.md` — who Misha is, how he thinks. Use this to interpret ambiguous notes and set the right tone.
+2. Read `/user/user-model.md` — who the owner is, how they think. Use this to interpret ambiguous notes and set the right tone.
 
 ---
 
@@ -61,7 +61,7 @@ brain/
 ## Wiki Voice and Structure
 
 - Default tone: clear, factual, terse.
-- Preserve Misha's own phrasing when it carries signal — don't neutralize into encyclopedia tone.
+- Preserve the owner's own phrasing when it carries signal — don't neutralize into encyclopedia tone.
 - Headings only when the entry is long enough to need them.
 - Bullets only when the content is genuinely a list.
 - One topic per file. Kebab-case filenames.
