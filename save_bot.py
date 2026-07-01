@@ -472,6 +472,34 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             media_group_tasks[group_id] = asyncio.create_task(flush_media_group(group_id))
             return
 
+        if msg.document:
+            orig_name = msg.document.file_name or "document"
+            file = await context.bot.get_file(msg.document.file_id)
+            file_path = os.path.join(RAW_DIR, f"{timestamp}_{orig_name}")
+            await file.download_to_drive(file_path)
+            try:
+                from markitdown import MarkItDown
+                result = MarkItDown().convert(file_path)
+                if result.text_content and len(result.text_content) > 50:
+                    archive_path = os.path.join(BRAIN_DIR, "archive", f"{timestamp}_{orig_name}")
+                    os.rename(file_path, archive_path)
+                    category = detect_category(result.text_content[:500], is_forward=True)
+                    content = (
+                        f"category: {category}\nsource: document\n"
+                        f"forwarded_from: {author}\nfilename: {orig_name}\ndate: {timestamp}\n"
+                        f"archive: {timestamp}_{orig_name}\n\n"
+                        f"{result.text_content}"
+                    )
+                    doc_fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
+                    with open(doc_fpath, "w") as f:
+                        f.write(content)
+                    await msg.reply_text(f"✓ {category} (from {author}: {orig_name})")
+                    return
+            except Exception as e:
+                logging.warning(f"markitdown failed on forwarded doc: {e}")
+            await msg.reply_text("✓ file")
+            return
+
         # Forwarded text/link
         url = extract_url(msg.text)
         content = f"source: telegram_forward\nauthor: {author}\ndate: {timestamp}\n\nnot my thought - forwarded content:\n\n{msg.text or ''}"
@@ -546,7 +574,12 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 archive_path = os.path.join(BRAIN_DIR, "archive", f"{timestamp}_{orig_name}")
                 os.rename(file_path, archive_path)
                 category = detect_category(result.text_content[:500])
-                content = f"category: {category}\nsource: document\nfilename: {orig_name}\ndate: {timestamp}\n\n{result.text_content}"
+                content = (
+                    f"category: {category}\nsource: document\n"
+                    f"filename: {orig_name}\ndate: {timestamp}\n"
+                    f"archive: {timestamp}_{orig_name}\n\n"
+                    f"{result.text_content}"
+                )
                 doc_fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
                 with open(doc_fpath, "w") as f:
                     f.write(content)
