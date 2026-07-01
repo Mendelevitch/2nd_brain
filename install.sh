@@ -8,6 +8,31 @@ echo "================================"
 echo "  2ND Brain — installer"
 echo "================================"
 echo ""
+echo "Do you have a Raspberry Pi or a Linux server already?"
+echo "  1) Yes — Raspberry Pi or VPS (continue install)"
+echo "  2) No  — I need a server first"
+echo ""
+read -p "Choice [1/2]: " SERVER_CHOICE
+
+if [ "$SERVER_CHOICE" = "2" ]; then
+    echo ""
+    echo "Get a server in ~2 minutes:"
+    echo ""
+    echo "  DigitalOcean: https://digitalocean.com"
+    echo "    → Create Droplet → Ubuntu 24.04 → Basic → \$6/mo (1GB) or \$12/mo (2GB)"
+    echo ""
+    echo "  Hetzner (cheaper): https://hetzner.com/cloud"
+    echo "    → New Project → Add Server → Ubuntu 24.04 → CX22 (€4/mo)"
+    echo ""
+    echo "Once your server is running:"
+    echo "  ssh root@<your-server-ip>"
+    echo "  git clone https://github.com/Mendelevitch/2nd_brain.git"
+    echo "  cd 2nd_brain && ./install.sh"
+    echo ""
+    exit 0
+fi
+
+echo ""
 
 # ── 1. Create brain directory structure ──────────────────────
 echo "→ Creating brain directory at $BRAIN_DIR..."
