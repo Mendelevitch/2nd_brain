@@ -6,13 +6,16 @@ import json
 import logging
 import urllib.request
 import urllib.parse
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.constants import ParseMode
 from datetime import datetime
 import anthropic
+import openai
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import MIND_BOT_TOKEN as TOKEN, ANTHROPIC_API_KEY, OWNER_ID, BRAIN_DIR
+from config import MIND_BOT_TOKEN as TOKEN, ANTHROPIC_API_KEY, OWNER_ID, BRAIN_DIR, OPENAI_API_KEY
 
 # ─── CONFIG ───────────────────────────────────────────────
 WIKI_DIR          = os.path.join(BRAIN_DIR, "wiki")
@@ -24,11 +27,55 @@ CHATS_DIR         = os.path.join(BRAIN_DIR, "chats")
 USER_MODEL        = os.path.join(BRAIN_DIR, "user/user-model.md")
 USER_MODEL_PUBLIC = os.path.join(BRAIN_DIR, "user/user-model-public.md")
 GUESTS_FILE       = os.path.join(BRAIN_DIR, "guests.json")
-GROUP_STATE_FILE  = os.path.join(BRAIN_DIR, "chats/.state.json")
+GROUP_STATE_FILE    = os.path.join(BRAIN_DIR, "chats/.state.json")
+GROUP_SESSIONS_FILE = os.path.join(BRAIN_DIR, "chats/.sessions.json")
+GROUP_BUFFERS_FILE  = os.path.join(BRAIN_DIR, "chats/.buffers.json")
 
 # ─── CLIENT ───────────────────────────────────────────────
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+oai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 logging.basicConfig(level=logging.INFO)
+
+# stores last digest text per user for voice playback
+last_digest: dict[int, str] = {}
+
+# ─── FORMATTING ───────────────────────────────────────────
+HTML_FORMAT_INSTRUCTION = (
+    "Format your reply using Telegram HTML: "
+    "<b>bold</b>, <i>italic</i>, <code>code</code>, <blockquote>quote</blockquote>. "
+    "Use plain text for everything else — no markdown asterisks or backticks."
+)
+
+def md_to_tg_html(text):
+    """Convert basic markdown to Telegram HTML as fallback for responses that ignore the instruction."""
+    import re as _re
+    # Escape any existing HTML special chars first (except our own tags)
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Bold: **text** or __text__
+    text = _re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=_re.DOTALL)
+    text = _re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=_re.DOTALL)
+    # Italic: *text* or _text_
+    text = _re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+    text = _re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
+    # Inline code: `text`
+    text = _re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    # Blockquote: > line
+    text = _re.sub(r'(?m)^&gt;\s?(.*)', r'<blockquote>\1</blockquote>', text)
+    return text
+
+async def send_html(target, text, **kwargs):
+    """Send message with HTML parse mode, falling back to plain text on error."""
+    try:
+        if hasattr(target, 'edit_text'):
+            return await target.edit_text(text, parse_mode=ParseMode.HTML, **kwargs)
+        else:
+            return await target.reply_text(text, parse_mode=ParseMode.HTML, **kwargs)
+    except Exception:
+        plain = re.sub(r'<[^>]+>', '', text)
+        if hasattr(target, 'edit_text'):
+            return await target.edit_text(plain, **kwargs)
+        else:
+            return await target.reply_text(plain, **kwargs)
 
 # ─── SESSION STATE ────────────────────────────────────────
 sessions = {}
@@ -57,6 +104,30 @@ def save_group_state():
     os.makedirs(os.path.dirname(GROUP_STATE_FILE), exist_ok=True)
     with open(GROUP_STATE_FILE, "w") as f:
         json.dump(group_state, f)
+
+def load_group_sessions():
+    global group_sessions
+    if os.path.exists(GROUP_SESSIONS_FILE):
+        with open(GROUP_SESSIONS_FILE) as f:
+            group_sessions = {int(k): v for k, v in json.load(f).items()}
+
+def save_group_sessions():
+    os.makedirs(os.path.dirname(GROUP_SESSIONS_FILE), exist_ok=True)
+    with open(GROUP_SESSIONS_FILE, "w") as f:
+        json.dump({str(k): v for k, v in group_sessions.items()}, f)
+
+def load_group_buffers():
+    global group_buffers
+    if os.path.exists(GROUP_BUFFERS_FILE):
+        with open(GROUP_BUFFERS_FILE) as f:
+            group_buffers = {int(k): v for k, v in json.load(f).items()}
+
+def save_group_buffers():
+    os.makedirs(os.path.dirname(GROUP_BUFFERS_FILE), exist_ok=True)
+    # Keep only last 50 messages per chat to avoid bloat
+    trimmed = {str(k): v[-50:] for k, v in group_buffers.items()}
+    with open(GROUP_BUFFERS_FILE, "w") as f:
+        json.dump(trimmed, f)
 
 # ─── GUESTS ───────────────────────────────────────────────
 def load_guests():
@@ -176,10 +247,29 @@ def web_search(query, max_results=3):
         logging.warning(f"web_search failed: {e}")
         return ""
 
-def get_latest_digest():
+async def send_voice_digest(query, text):
+    """Generate TTS and send as voice message(s), max 4096 chars per chunk."""
+    chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+    await query.answer()
+    for chunk in chunks:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            tmp_path = f.name
+        try:
+            response = oai_client.audio.speech.create(
+                model="tts-1",
+                voice="onyx",
+                input=chunk
+            )
+            response.stream_to_file(tmp_path)
+            with open(tmp_path, "rb") as audio:
+                await query.message.reply_voice(voice=audio)
+        finally:
+            os.unlink(tmp_path)
+
+def get_latest_digest(pattern="thinking"):
     if not os.path.exists(INSIGHTS_DIR):
         return None
-    files = sorted(glob.glob(os.path.join(INSIGHTS_DIR, "*.md")))
+    files = sorted(glob.glob(os.path.join(INSIGHTS_DIR, f"*{pattern}*.md")))
     if not files:
         return None
     with open(files[-1], "r") as f:
@@ -254,17 +344,35 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_guest = user_id in guest_ids
 
     # Ignore unknown commands
-    if text.startswith("/") and text not in ["/think", "/browse", "/digest", "/tasks"]:
+    if text.startswith("/") and text not in ["/think", "/browse", "/digest", "/status"]:
         return
 
-    # Digest command (owner only)
-    if text.lower() in ["дайджест", "digest", "/digest"] and not is_guest:
-        content = get_latest_digest()
+    # Digest — latest thinking digest (owner only)
+    if text.lower() in ["дайджест", "/digest"] and not is_guest:
+        content = get_latest_digest("thinking")
         if not content:
-            await msg.reply_text("No digests yet")
+            await msg.reply_text("Thinking digest пока нет")
             return
-        for chunk in split_digest(content):
+        last_digest[user_id] = content
+        chunks = split_digest(content)
+        for chunk in chunks[:-1]:
             await msg.reply_text(chunk)
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_digest:{user_id}")]])
+        await msg.reply_text(chunks[-1], reply_markup=keyboard)
+        return
+
+    # Status — latest weekly planning digest (owner only)
+    if text.lower() == "/status" and not is_guest:
+        content = get_latest_digest("weekly-digest")
+        if not content:
+            await msg.reply_text("Дайджест пока нет")
+            return
+        last_digest[user_id] = content
+        chunks = split_digest(content)
+        for chunk in chunks[:-1]:
+            await msg.reply_text(chunk)
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_digest:{user_id}")]])
+        await msg.reply_text(chunks[-1], reply_markup=keyboard)
         return
 
     # Toggle think mode (owner only)
@@ -283,16 +391,23 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(f"🧠 think: {think_state}  🌐 browse: {state}")
         return
 
-    # End session (owner only)
-    if text == "??" and not is_guest:
-        if user_id in sessions and sessions[user_id]:
-            save_session(user_id, sessions[user_id], False)
-            sessions.pop(user_id)
-            session_saved_length.pop(user_id, None)
-            await msg.reply_text("✓ saved to brain")
+    # End session
+    if text == "??":
+        if not is_guest:
+            if user_id in sessions and sessions[user_id]:
+                save_session(user_id, sessions[user_id], False)
+                sessions.pop(user_id)
+                session_saved_length.pop(user_id, None)
+                await msg.reply_text("✓ saved to brain")
+            else:
+                await msg.reply_text("No active session")
+            return
         else:
-            await msg.reply_text("No active session")
-        return
+            if user_id in sessions and sessions[user_id]:
+                save_session(user_id, sessions[user_id], True)
+                sessions.pop(user_id)
+                session_saved_length.pop(user_id, None)
+            return
 
     if user_id not in sessions:
         sessions[user_id] = []
@@ -340,7 +455,7 @@ Rules:
 - If the guest asks something factual you're uncertain about, engage with the idea first, then note what you'd want to verify.
 - Apply Misha's perspective and frameworks to whatever the guest brings up.
 - Brainstorm as an equal — build on their ideas, throw in unexpected angles, yes-and and then challenge. This is a creative conversation between two people thinking together, not Q&A.
-- Always reply in the same language as the guest's message.
+- Always reply in the same language as the guest's message. {HTML_FORMAT_INSTRUCTION}
 {greeting_instruction}"""
             }
         ]
@@ -353,19 +468,19 @@ Rules:
             },
             {
                 "type": "text",
-                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how Misha sees the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message."
+                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how Misha sees the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
             }
         ]
     else:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are Misha's personal assistant — a creative director and brand strategist from London.\n\nWIKI — his full knowledge base:\n{wiki_context}",
+                "text": f"You are Misha's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything he knows:\n\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
                 "type": "text",
-                "text": f"USER MODEL — who Misha is and how he thinks:\n{user_model[:3000]}{web_extra}\n\nBe concise and direct. Always reply in the same language as the user's message."
+                "text": f"USER MODEL — who Misha is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with him:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in his notes connects to what he's saying — bring it in naturally, don't announce it.\n- Match his energy: if he's thinking out loud, think with him. If he wants a quick answer, give it.\n- Always reply in the same language as his message."
             }
         ]
 
@@ -373,14 +488,14 @@ Rules:
 
     response = client.messages.create(
         model=model,
-        max_tokens=1000,
+        max_tokens=1500,
         system=system_blocks,
         messages=sessions[user_id]
     )
 
     reply = response.content[0].text
     sessions[user_id].append({"role": "assistant", "content": reply})
-    await thinking_msg.edit_text(reply)
+    await send_html(thinking_msg, reply)
     # Log cache usage for cost monitoring
     u = response.usage
     logging.info(f"tokens: input={u.input_tokens} cache_read={getattr(u, 'cache_read_input_tokens', 0)} cache_write={getattr(u, 'cache_creation_input_tokens', 0)} output={u.output_tokens}")
@@ -391,9 +506,10 @@ async def handle_group_mention(update: Update, context: ContextTypes.DEFAULT_TYP
     thinking = await update.message.reply_text("…")
     chat_id = update.effective_chat.id
 
-    # Build wiki query from full session context, not just current message
-    session_text = " ".join(m["content"] for m in group_sessions.get(chat_id, [])[-50:])
-    wiki_query = f"{session_text} {query}".strip()
+    # Build wiki query: session history + recent buffer messages + current query
+    session_text = " ".join(m["content"] for m in group_sessions.get(chat_id, [])[-20:])
+    buffer_text = " ".join(m["text"] for m in group_buffers.get(chat_id, [])[-20:])
+    wiki_query = f"{session_text} {buffer_text} {query}".strip()
     wiki = load_wiki(query=wiki_query)
     user_model = load_user_model(public=True)
 
@@ -419,6 +535,7 @@ async def handle_group_mention(update: Update, context: ContextTypes.DEFAULT_TYP
     lang_instruction = "Reply in Russian." if any(
         'Ѐ' <= c <= 'ӿ' for c in sample
     ) else "Reply in the same language as the user's message."
+    lang_instruction += f" {HTML_FORMAT_INSTRUCTION}"
 
     web_context = ""
     if group_browse.get(chat_id):
@@ -446,9 +563,9 @@ Relevant knowledge:
     if chat_id not in group_sessions:
         group_sessions[chat_id] = []
 
-    # First message in session includes recent chat history as context
-    if not group_sessions[chat_id] and chat_history:
-        user_content = f"Recent chat context:\n{chat_history}\n\n{query or 'What do you think?'}"
+    # Always include recent chat context so bot sees what's happening around the mention
+    if chat_history:
+        user_content = f"Recent chat:\n{chat_history}\n\n{query or 'What do you think?'}"
     else:
         user_content = query or "What do you think?"
 
@@ -466,67 +583,76 @@ Relevant knowledge:
     )
     reply = response.content[0].text
     group_sessions[chat_id].append({"role": "assistant", "content": reply})
-    await thinking.edit_text(reply)
+    save_group_sessions()
+    await send_html(thinking, reply)
+
+EPISODE_GAP_HOURS = 4  # gap between messages that marks episode boundary
+
+def split_into_episodes(messages, gap_hours=EPISODE_GAP_HOURS):
+    """Split message list into episodes by time gap. Returns list of episode lists.
+    An episode is considered closed only if a gap has occurred after it."""
+    if not messages:
+        return []
+    episodes = []
+    current = [messages[0]]
+    for msg in messages[1:]:
+        prev_ts = current[-1].get("unix_ts", 0)
+        curr_ts = msg.get("unix_ts", 0)
+        if prev_ts and curr_ts and (curr_ts - prev_ts) > gap_hours * 3600:
+            episodes.append(current)
+            current = [msg]
+        else:
+            current.append(msg)
+    # current episode is open (ongoing) — don't process it yet
+    return episodes
 
 async def scan_group_chat(context):
-    """Hourly job: extract action items, links, ideas from group buffers."""
+    """Hourly job: save closed episodes as transcripts to /raw for Cowork to process."""
+    archive_dir = os.path.join(BRAIN_DIR, "archive")
     for chat_id, messages in list(group_buffers.items()):
-        state = group_state.get(chat_id, {"name": str(chat_id), "last_processed_id": 0})
+        if not messages:
+            continue
+        if chat_id not in group_state:
+            group_state[chat_id] = {"name": str(chat_id), "title": str(chat_id), "last_processed_id": 0}
+        state = group_state[chat_id]
         last_id = state["last_processed_id"]
         new_messages = [m for m in messages if m["msg_id"] > last_id]
-        if len(new_messages) < 3:
-            continue
-        batch = new_messages[-100:]
-        transcript = "\n".join(f"[{m['ts']}] {m['author']}: {m['text']}" for m in batch)
-        try:
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=600,
-                messages=[{"role": "user", "content": f"""Extract valuable items from this chat transcript.
-Return JSON only — skip small talk and noise.
-
-{{"todos": [{{"title": "...", "author": "..."}}], "links": [{{"url": "...", "context": "..."}}], "ideas": [{{"text": "...", "author": "..."}}]}}
-
-Transcript:
-{transcript}"""}]
-            )
-            raw = response.content[0].text.strip()
-            match = re.search(r'\{.*\}', raw, re.DOTALL)
-            if not match:
-                continue
-            extracted = json.loads(match.group(0))
-        except Exception as e:
-            logging.warning(f"scan_group_chat failed for {chat_id}: {e}")
+        if not new_messages:
             continue
 
         chat_name = state["name"]
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        chat_title = state.get("title", chat_name)
 
-        chat_dir = os.path.join(CHATS_DIR, chat_name)
-        os.makedirs(chat_dir, exist_ok=True)
-        log_path = os.path.join(chat_dir, f"{date_str}.md")
-        with open(log_path, "a") as f:
-            f.write(f"\n## Scan {timestamp}\n\n")
-            for todo in extracted.get("todos", []):
-                f.write(f"- [ ] **{todo['author']}**: {todo['title']}\n")
-            for idea in extracted.get("ideas", []):
-                f.write(f"- 💡 **{idea['author']}**: {idea['text']}\n")
-            for link in extracted.get("links", []):
-                f.write(f"- 🔗 {link['url']} — {link['context']}\n")
+        closed_episodes = split_into_episodes(new_messages)
+        if not closed_episodes:
+            continue
 
-        items = extracted.get("ideas", []) + extracted.get("links", [])
-        if items:
-            combined = "\n".join(
-                f"{x.get('author','')}: {x.get('text') or x.get('url','')}" for x in items
+        last_processed_id = last_id
+        for episode in closed_episodes:
+            episode_ts = episode[-1].get("unix_ts", 0)
+            timestamp = datetime.fromtimestamp(episode_ts).strftime("%Y%m%d_%H%M%S") if episode_ts else datetime.now().strftime("%Y%m%d_%H%M%S")
+            fpath = os.path.join(RAW_DIR, f"{timestamp}_chat_{chat_name}.md")
+            # Skip if already saved to raw or archive
+            archive_path = os.path.join(archive_dir, f"{timestamp}_chat_{chat_name}.md")
+            if os.path.exists(fpath) or os.path.exists(archive_path):
+                logging.info(f"scan_group_chat [{chat_name}]: skipping {timestamp} (already exists)")
+                last_processed_id = episode[-1]["msg_id"]
+                continue
+            transcript = "\n".join(f"[{m.get('ts','')}] {m['author']}: {m['text']}" for m in episode)
+            content = (
+                f"category: conversation\n"
+                f"source: group_chat\n"
+                f"chat: {chat_title}\n"
+                f"date: {timestamp}\n\n"
+                f"{transcript}"
             )
-            content = f"category: idea\nsource: group_chat\nchat: {chat_name}\ndate: {timestamp}\n\n{combined}"
-            with open(os.path.join(RAW_DIR, f"{timestamp}_group_idea.md"), "w") as f:
+            with open(fpath, "w") as f:
                 f.write(content)
+            last_processed_id = episode[-1]["msg_id"]
+            logging.info(f"scan_group_chat [{chat_name}]: saved episode {timestamp} ({len(episode)} msgs)")
 
-        group_state[chat_id]["last_processed_id"] = batch[-1]["msg_id"]
+        group_state[chat_id]["last_processed_id"] = last_processed_id
         save_group_state()
-        logging.info(f"scan_group_chat [{chat_name}]: {len(extracted.get('todos',[]))} todos, {len(extracted.get('ideas',[]))} ideas")
 
 async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle messages in group/supergroup chats."""
@@ -543,7 +669,7 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in group_buffers:
         group_buffers[chat_id] = []
         if chat_id not in group_state:
-            group_state[chat_id] = {"name": chat_name, "last_processed_id": 0}
+            group_state[chat_id] = {"name": chat_name, "title": chat_title, "last_processed_id": 0}
     if chat_id not in group_members:
         group_members[chat_id] = set()
 
@@ -554,10 +680,12 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "author": author,
         "text": text,
         "msg_id": msg.message_id,
-        "ts": datetime.now().strftime("%H:%M")
+        "ts": datetime.now().strftime("%H:%M"),
+        "unix_ts": msg.date.timestamp() if msg.date else 0,
     })
     if len(group_buffers[chat_id]) > 200:
         group_buffers[chat_id] = group_buffers[chat_id][-200:]
+    save_group_buffers()
 
     # Check for @mention
     bot_username = (await context.bot.get_me()).username
@@ -582,9 +710,36 @@ async def track_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
             group_members[chat_id].add(name)
 
 # ─── RUN ──────────────────────────────────────────────────
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    if query.data.startswith("voice_digest:"):
+        uid = int(query.data.split(":")[1])
+        if uid != query.from_user.id:
+            await query.answer("Не твой дайджест")
+            return
+        text = last_digest.get(uid)
+        if not text:
+            await query.answer("Дайджест не найден")
+            return
+        await query.answer("Генерирую аудио…")
+        await send_voice_digest(query, text)
+
+async def post_init(app):
+    from telegram import BotCommand
+    await app.bot.set_my_commands([
+        BotCommand("think",   "Режим глубокого анализа (Sonnet)"),
+        BotCommand("browse",  "Поиск в интернете"),
+        BotCommand("digest",  "Последний thinking digest"),
+        BotCommand("status",  "Статус проектов за неделю"),
+    ])
+
 if __name__ == "__main__":
     load_group_state()
-    app = ApplicationBuilder().token(TOKEN).build()
+    load_group_sessions()
+    load_group_buffers()
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     # Track members joining
     from telegram.ext import ChatMemberHandler
     app.add_handler(ChatMemberHandler(track_chat_members, ChatMemberHandler.CHAT_MEMBER))
@@ -593,6 +748,8 @@ if __name__ == "__main__":
         filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
         handle_group
     ))
+    # Inline button callbacks
+    app.add_handler(CallbackQueryHandler(handle_callback))
     # Private messages
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.TEXT | filters.COMMAND), handle))
     app.job_queue.run_repeating(autosave, interval=1800, first=1800)

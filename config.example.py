@@ -26,9 +26,3 @@ BRAIN_DIR = "/brain"
 # If running directly on a Pi or Mac, use the actual path:
 # BRAIN_DIR = "/path/to/your/brain"
 
-# ── Optional: Notion integration ─────────────────────────
-# Leave empty strings to disable.
-# Database schema: Name (title), Status (select), Due Date (date),
-#                  Priority (select), Source (select)
-NOTION_TOKEN = ""
-NOTION_DB    = ""

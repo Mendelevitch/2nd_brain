@@ -38,31 +38,24 @@ You → Telegram → SaveBot → /raw → Cowork → /wiki → ChatBot → You
 
 ## Requirements
 
-- Raspberry Pi 4 or 5 (2 GB+ RAM)
+- A Linux server — Raspberry Pi 4/5, or a VPS (DigitalOcean, Hetzner, etc.)
 - Python 3.11+
-- [Cowork](https://cowork.ai) — required for running the processing prompts
-- A Mac or PC for running Cowork, synced to the Pi via Syncthing
 - Telegram account
+- Anthropic API key (for the bots)
+- OpenAI API key (optional — for voice transcription via Whisper)
+
+**For automatic wiki processing:** [Cowork](https://cowork.ai) on a Mac/PC, synced via Syncthing. Without it, the bots still work — capture and chat — but wiki won't update automatically.
 
 ---
 
 ## Quick start
 
-### 1. Clone and configure
-
 ```bash
 git clone https://github.com/yourusername/2nd-brain.git
-cd 2nd-brain
-cp config.example.py config.py
-# Edit config.py — fill in all values (see comments in the file)
+cd 2nd-brain && ./install.sh
 ```
 
-### 2. Create your brain directory
-
-```bash
-mkdir -p /path/to/your/brain/{raw,wiki,archive,insights,user,guest_chats,prompts}
-cp prompts/* /path/to/your/brain/prompts/
-```
+That's it. The script asks for your API keys and bot tokens, creates the brain directory, installs dependencies, and starts both bots as systemd services.
 
 ### 3. Install dependencies
 
@@ -85,6 +78,69 @@ sudo systemctl daemon-reload
 sudo systemctl enable save-bot chat-bot watch-bots
 sudo systemctl start save-bot chat-bot watch-bots
 ```
+
+### 6. Set up Syncthing (optional, Mac/Pi only)
+
+---
+
+## Deploy to VPS (DigitalOcean / Hetzner)
+
+No Raspberry Pi? A $6/month VPS works just as well.
+
+### 1. Create a server
+
+DigitalOcean Droplet or Hetzner CX22 — Ubuntu 24.04, 2GB RAM minimum.
+
+### 2. Set up the brain directory
+
+```bash
+mkdir -p ~/brain/{raw,wiki,archive,insights,user,guest_chats,chats,prompts,skills,_Claude}
+```
+
+### 3. Clone and configure
+
+```bash
+git clone https://github.com/yourusername/2nd-brain.git
+cd 2nd-brain
+cp config.example.py config.py
+nano config.py  # fill in your tokens and set BRAIN_DIR="/root/brain"
+cp -r prompts/* ~/brain/prompts/
+cp save_bot.py chat_bot.py ~/brain/_Claude/
+```
+
+### 4. Install dependencies
+
+```bash
+pip3 install python-telegram-bot[job-queue] openai anthropic \
+             newspaper3k lxml_html_clean yt-dlp \
+             "markitdown[all]" --break-system-packages
+```
+
+### 5. Install as services
+
+```bash
+# Edit the paths in service files first
+sed -i 's|/path/to/your/brain|/root/brain|g' services/*.service
+sudo cp services/save-bot.service services/chat-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable save-bot chat-bot
+sudo systemctl start save-bot chat-bot
+```
+
+### 6. Build your user model
+
+Create `~/brain/user/user-model.md` — see `templates/user-model.md` for the template. Fill it in manually or use `templates/build-user-model.md` with Cowork.
+
+### What works without Cowork
+
+| Feature | Works |
+|---|---|
+| Capture (voice, photos, links, text) | ✅ |
+| Chat with bot | ✅ |
+| Guest access | ✅ |
+| YouTube transcription | ✅ |
+| Wiki auto-update from raw | ❌ needs Cowork |
+| Weekly planning digest | ❌ needs Cowork |
 
 ### 6. Set up Syncthing (optional)
 

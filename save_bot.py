@@ -14,7 +14,6 @@ import anthropic
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import BRAIN_BOT_TOKEN as TOKEN, OPENAI_API_KEY, ANTHROPIC_API_KEY, OWNER_ID, BRAIN_DIR
-from config import NOTION_TOKEN, NOTION_DB
 
 # ─── CONFIG ───────────────────────────────────────────────
 ALLOWED_USER = OWNER_ID
@@ -43,19 +42,105 @@ def extract_url(text):
     urls = re.findall(pattern, text or "")
     return urls[0] if urls else None
 
+def summarize_youtube(title, transcript):
+    """Summarize YouTube transcript via Claude Haiku. Returns summary string."""
+    try:
+        prompt = f"""Video: {title}
+
+Transcript:
+{transcript}
+
+Write a tight summary — max 5 bullet points, each 1-2 sentences.
+Extract the actual substance: if there's a list, name the items; if there's a how-to, give the core steps; if there's an argument, state the conclusion.
+Skip hype, intros, outros, and anything meta about the video itself.
+Reply in English if the transcript is in English, in Russian if the transcript is in Russian, otherwise in English."""
+        response = claude_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
+    except Exception as e:
+        logging.warning(f"summarize_youtube failed: {e}")
+        return None
+
+def get_youtube_transcript(url):
+    """Fetch YouTube subtitles via yt-dlp. Returns (title, transcript_text) or (title, None)."""
+    import tempfile, subprocess, shutil
+    tmpdir = tempfile.mkdtemp()
+    try:
+        title_result = subprocess.run(
+            ["/home/pi/.local/bin/yt-dlp", "--skip-download", "--print", "title", url],
+            capture_output=True, text=True
+        )
+        title = title_result.stdout.strip().splitlines()[0] if title_result.stdout.strip() else ""
+
+        subprocess.run([
+            "/home/pi/.local/bin/yt-dlp", "--skip-download",
+            "--write-auto-sub", "--write-sub",
+            "--sub-lang", "en,ru",
+            "--sub-format", "vtt",
+            "-o", os.path.join(tmpdir, "sub"),
+            url
+        ], capture_output=True, text=True)
+
+        vtt_files = [f for f in os.listdir(tmpdir) if ".vtt" in f]
+        if not vtt_files:
+            return title, None
+
+        with open(os.path.join(tmpdir, vtt_files[0]), encoding="utf-8") as f:
+            raw = f.read()
+
+        # Parse incremental VTT blocks: take last text line per block, dedup adjacent
+        lines = []
+        for block in raw.strip().split("\n\n"):
+            block_lines = block.strip().splitlines()
+            text_lines = [l for l in block_lines
+                          if l and "-->" not in l
+                          and not l.startswith("WEBVTT")
+                          and not l.startswith("Kind:")
+                          and not l.startswith("Language:")]
+            if text_lines:
+                clean = re.sub(r"<[^>]+>", "", text_lines[-1]).strip()
+                if clean:
+                    lines.append(clean)
+        deduped = [lines[0]] if lines else []
+        for l in lines[1:]:
+            if l != deduped[-1]:
+                deduped.append(l)
+        return title, " ".join(deduped)
+    except Exception as e:
+        logging.warning(f"get_youtube_transcript failed: {e}")
+        return "", None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
 def scrape_url(url):
-    # Try markitdown first (handles web pages, YouTube, PDFs, etc.)
+    is_youtube = "youtube.com" in url or "youtu.be" in url
+    if is_youtube:
+        title, transcript = get_youtube_transcript(url)
+        if transcript:
+            return title, transcript
+        # Fallback: description only
+        try:
+            import yt_dlp
+            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+            title = info.get("title", "")
+            desc = info.get("description", "") or ""
+            channel = info.get("channel", "") or info.get("uploader", "")
+            return title, f"Channel: {channel}\n\n{desc[:5000]}"
+        except Exception as e:
+            logging.warning(f"yt-dlp metadata failed for {url}: {e}")
+            return None, None
+    # Web pages: markitdown first, newspaper3k fallback
     try:
         from markitdown import MarkItDown
         result = MarkItDown().convert(url)
-        if result.text_content and len(result.text_content) > 100:
-            title = result.title or ""
-            return title, result.text_content[:30000]
+        if result.text_content and len(result.text_content) > 200:
+            return result.title or "", result.text_content[:30000]
     except Exception as e:
         logging.debug(f"markitdown scrape failed for {url}: {e}")
-    # Fallback: YouTube via yt-dlp, articles via newspaper3k
-    if "youtube.com" in url or "youtu.be" in url:
-        return get_youtube(url)
     try:
         from newspaper import Article
         article = Article(url)
@@ -82,24 +167,21 @@ def detect_category(text, is_forward=False):
             max_tokens=10,
             messages=[{
                 "role": "user",
-                "content": f"""Determine the category of this note. Reply with exactly one word from this list:
+                "content": f"""Categorize this note. Reply with exactly one word from this list:
 idea, thought, case, link, cool, question, todo, reference, event
 
-Examples:
-"надо сделать" → todo
-"не забыть купить" → todo
-"нужно позвонить" → todo
-"задача — полить цветы" → todo
-"туду" → todo
-"встреча в пятницу в 18:00" → event
-"вечеринка в субботу, Mile End park" → event
-"день рождения Маши 4 июля" → event
-"интересная мысль о брендинге" → thought
-"крутое решение" → case
-"вдохновение" → cool
-"почему так работает?" → question
+Categories:
+idea — concepts, options, proposals, directions for a project; creative input; things to consider or try ("варианты:", "что если", "идеи для")
+thought — personal observation, reflection, or opinion; something the author is working through
+todo — a concrete action the author must do; has a clear executor and verb ("надо", "нужно", "не забыть", "позвонить", "купить")
+case — an example, case study, or execution worth noting
+link — a URL or reference to external content
+cool — something inspiring, interesting, or worth saving without a specific category
+question — an open question or something the author wants to explore
+reference — factual information, data, a definition, or something to look up later
+event — a specific time-bound happening: meeting, birthday, deadline, appointment
 
-{forward_hint}Note: {text[:200]}
+{forward_hint}Note: {text[:300]}
 
 Reply with one word only:"""
             }]
@@ -113,7 +195,7 @@ Reply with one word only:"""
         logging.warning(f"detect_category failed: {e}")
         return "thought"
 
-# ─── NOTION ───────────────────────────────────────────────
+# ─── TASKS ────────────────────────────────────────────────
 def parse_todo(text):
     """Use Haiku to extract tasks from text. Returns a list of task dicts."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -168,92 +250,13 @@ def write_sync_flag(filepath, flag):
         logging.warning(f"write_sync_flag failed: {e}")
 
 def add_notion_task(title, deadline=None, priority=None, source=None):
-    """Add a task to Notion database."""
-    try:
-        props = {
-            "Name": {"title": [{"text": {"content": title}}]},
-        }
-        if deadline:
-            props["Due Date"] = {"date": {"start": deadline}}
-        if priority:
-            props["Priority"] = {"select": {"name": priority}}
-        if source:
-            props["Source"] = {"select": {"name": source}}
+    return False
 
-        data = json.dumps({"parent": {"database_id": NOTION_DB}, "properties": props}).encode()
-        req = urllib.request.Request(
-            "https://api.notion.com/v1/pages",
-            data=data,
-            headers={
-                "Authorization": f"Bearer {NOTION_TOKEN}",
-                "Content-Type": "application/json",
-                "Notion-Version": "2022-06-28"
-            },
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            result = json.loads(r.read().decode())
-            logging.info(f"notion task added: {title}")
-            return True
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        logging.warning(f"add_notion_task failed: {e.code} {body}")
-        return False
-    except Exception as e:
-        logging.warning(f"add_notion_task failed: {e}")
-        return False
-
-# ─── NOTION READ ──────────────────────────────────────────
 def get_notion_tasks():
-    """Return open tasks from Notion, grouped by status. Updates last_tasks_list."""
-    global last_tasks_list
-    try:
-        data = json.dumps({
-            "filter": {"property": "Status", "status": {"does_not_equal": "Done"}},
-            "sorts": [{"property": "Status", "direction": "ascending"}]
-        }).encode()
-        req = urllib.request.Request(
-            f"https://api.notion.com/v1/databases/{NOTION_DB}/query",
-            data=data,
-            headers={"Authorization": f"Bearer {NOTION_TOKEN}",
-                     "Content-Type": "application/json",
-                     "Notion-Version": "2022-06-28"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            results = json.loads(r.read().decode()).get("results", [])
-        tasks = []
-        for page in results:
-            props = page["properties"]
-            title = props["Name"]["title"]
-            name = title[0]["text"]["content"] if title else "(no title)"
-            status = props.get("Status", {}).get("status", {}).get("name", "")
-            due = (props.get("Due Date", {}).get("date") or {}).get("start", "")
-            tasks.append({"id": page["id"], "name": name, "status": status, "due": due})
-        last_tasks_list = tasks
-        return tasks
-    except Exception as e:
-        logging.warning(f"get_notion_tasks failed: {e}")
-        return []
+    return []
 
 def mark_notion_done(page_id):
-    """Set task status to Done in Notion."""
-    try:
-        data = json.dumps({"properties": {"Status": {"status": {"name": "Done"}}}}).encode()
-        req = urllib.request.Request(
-            f"https://api.notion.com/v1/pages/{page_id}",
-            data=data,
-            headers={"Authorization": f"Bearer {NOTION_TOKEN}",
-                     "Content-Type": "application/json",
-                     "Notion-Version": "2022-06-28"},
-            method="PATCH"
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-        return True
-    except Exception as e:
-        logging.warning(f"mark_notion_done failed: {e}")
-        return False
+    return False
 
 def scan_for_hidden_todos(text, source, fpath=None):
     """Scan text for explicit action items and add them to Notion."""
@@ -473,9 +476,21 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = extract_url(msg.text)
         content = f"source: telegram_forward\nauthor: {author}\ndate: {timestamp}\n\nnot my thought - forwarded content:\n\n{msg.text or ''}"
         if url:
+            is_yt = "youtube.com" in url or "youtu.be" in url
             title, text = scrape_url(url)
             if text:
-                content += f"\n\n---\nurl: {url}\ntitle: {title}\n\n{text[:3000]}"
+                if is_yt:
+                    summary = summarize_youtube(title, text)
+                    if summary:
+                        full = f"📹 {title}\n\n{summary}"
+                        for i in range(0, len(full), 4000):
+                            await context.bot.send_message(chat_id=last_chat_id, text=full[i:i+4000])
+                    content += f"\n\n---\nurl: {url}\ntitle: {title}\n\n"
+                    if summary:
+                        content += f"## Summary\n{summary}\n\n## Transcript\n"
+                    content += text
+                else:
+                    content += f"\n\n---\nurl: {url}\ntitle: {title}\n\n{text[:3000]}"
         scan_for_hidden_todos(msg.text or '', "text")
         batch_buffer.append(content)
         batch_count += 1
@@ -550,8 +565,20 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif msg.text:
         url = extract_url(msg.text)
         if url:
+            is_yt = "youtube.com" in url or "youtu.be" in url
             title, text = scrape_url(url)
-            content = f"source: external_link\ndate: {timestamp}\nurl: {url}\ntitle: {title or ''}\n\n{text[:10000] if text else msg.text}"
+            if is_yt and text:
+                summary = summarize_youtube(title, text)
+                if summary:
+                    full = f"📹 {title}\n\n{summary}"
+                    for i in range(0, len(full), 4000):
+                        await msg.reply_text(full[i:i+4000])
+                content = f"source: external_link\ndate: {timestamp}\nurl: {url}\ntitle: {title or ''}\n\n"
+                if summary:
+                    content += f"## Summary\n{summary}\n\n## Transcript\n"
+                content += text
+            else:
+                content = f"source: external_link\ndate: {timestamp}\nurl: {url}\ntitle: {title or ''}\n\n{text[:10000] if text else msg.text}"
         else:
             category = detect_category(msg.text)
             content = f"category: {category}\nsource: self_text\ndate: {timestamp}\n\n{msg.text}"
