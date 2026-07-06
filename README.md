@@ -220,6 +220,8 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 | `prompts/synthesize.md` | On demand | Cross-wiki synthesis — finds patterns, tensions, and evolutions across all entries |
 | `prompts/weekly-thinking-digest.md` | Every Friday ~12:00 | Friday evening digest — surfaces interesting ideas, unexpected intersections, and patterns from the week's wiki entries |
 
+To create all routines at once, run `templates/setup-cowork-routines.md` in Cowork.
+
 ---
 
 ## API keys needed
@@ -259,11 +261,11 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 ## Backlog
 
 ### Pending
-- **Syncthing in install.sh** — automate Syncthing installation and folder setup as part of `install.sh`. Currently requires manual setup following `docs/setup-syncthing.md`.
-- **Cowork routines setup guide** — add instructions (or a prompt) for creating the standard scheduled routines in Cowork after install. Currently users have to create them manually.
 - **Shared wiki** — multiple people contributing to and reading from one wiki. Complex architecture problem; leaving as a future idea.
 
 ### Done
+- ~~Syncthing in install.sh~~ — `install.sh` now offers Syncthing setup, installs it, and prints Device ID
+- ~~Cowork routines setup guide~~ — `templates/setup-cowork-routines.md` — run once in Cowork to create all scheduled routines
 - ~~Privacy Mode docs~~ — added to README (Group chats section)
 - ~~Personalisation removed~~ — all "owner name" references stripped from public repo
 

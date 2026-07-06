@@ -124,7 +124,39 @@ sudo systemctl daemon-reload
 sudo systemctl enable save-bot chat-bot
 sudo systemctl start save-bot chat-bot
 
-# ── 7. Done ───────────────────────────────────────────────────
+# ── 7. Syncthing (optional) ───────────────────────────────────
+echo ""
+echo "Syncthing keeps your wiki and raw files in sync with your Mac."
+read -p "Set up Syncthing now? [y/N]: " SYNC_CHOICE
+
+if [ "$SYNC_CHOICE" = "y" ] || [ "$SYNC_CHOICE" = "Y" ]; then
+    echo "→ Installing Syncthing..."
+    sudo apt-get install -y syncthing 2>/dev/null || \
+        (curl -s https://syncthing.net/release-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/syncthing-archive-keyring.gpg && \
+         echo "deb [signed-by=/usr/share/keyrings/syncthing-archive-keyring.gpg] https://apt.syncthing.net/ syncthing stable" | sudo tee /etc/apt/sources.list.d/syncthing.list && \
+         sudo apt-get update -q && sudo apt-get install -y syncthing)
+
+    CURRENT_USER=$(whoami)
+    sudo systemctl enable "syncthing@$CURRENT_USER"
+    sudo systemctl start "syncthing@$CURRENT_USER"
+
+    sleep 2
+    DEVICE_ID=$(syncthing --device-id 2>/dev/null || cat "$HOME/.local/state/syncthing/config.xml" 2>/dev/null | grep -o 'id="[^"]*"' | head -1 | cut -d'"' -f2 || echo "(run: syncthing --device-id)")
+
+    echo ""
+    echo "→ Syncthing is running."
+    echo ""
+    echo "  Your server Device ID:"
+    echo "  $DEVICE_ID"
+    echo ""
+    echo "  Next steps on your Mac:"
+    echo "  1. Install Syncthing: brew install syncthing && brew services start syncthing"
+    echo "  2. Open http://localhost:8384 — add this server as a remote device"
+    echo "  3. Add shared folders — see docs/setup-syncthing.md for the full list"
+    echo ""
+fi
+
+# ── 8. Done ───────────────────────────────────────────────────
 echo ""
 echo "================================"
 echo "  Done!"
@@ -142,4 +174,7 @@ echo "Next steps:"
 echo "  1. Edit $BRAIN_DIR/user/user-model.md — describe yourself"
 echo "  2. Add guests to $BRAIN_DIR/guests.json"
 echo "  3. Send a voice message or link to your SaveBot to test"
+if [ "$SYNC_CHOICE" != "y" ] && [ "$SYNC_CHOICE" != "Y" ]; then
+    echo "  4. Set up Syncthing later: see docs/setup-syncthing.md"
+fi
 echo ""
