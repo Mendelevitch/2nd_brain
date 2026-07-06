@@ -156,9 +156,12 @@ def collect_all_files():
     entries = []
     # wiki files
     if os.path.exists(WIKI_DIR):
-        for fname in sorted(os.listdir(WIKI_DIR)):
-            if fname.endswith(".md") and fname not in ("_index.md", ".gitkeep"):
-                entries.append((fname, os.path.join(WIKI_DIR, fname)))
+        for root, dirs, files in os.walk(WIKI_DIR):
+            dirs[:] = [d for d in sorted(dirs) if not d.startswith('.')]
+            for fname in sorted(files):
+                if fname.endswith(".md") and fname not in ("_index.md", ".gitkeep") and not fname.startswith('.'):
+                    rel = os.path.relpath(os.path.join(root, fname), WIKI_DIR)
+                    entries.append((rel, os.path.join(root, fname)))
     # projects — walk subdirectories
     if os.path.exists(PROJECTS_DIR):
         for root, dirs, files in os.walk(PROJECTS_DIR):
@@ -344,7 +347,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_guest = user_id in guest_ids
 
     # Ignore unknown commands
-    if text.startswith("/") and text not in ["/think", "/browse", "/digest", "/status"]:
+    if text.startswith("/") and text not in ["/think", "/browse", "/digest", "/status", "/tasks"]:
         return
 
     # Digest — latest thinking digest (owner only)
@@ -733,6 +736,7 @@ async def post_init(app):
         BotCommand("browse",  "Поиск в интернете"),
         BotCommand("digest",  "Последний thinking digest"),
         BotCommand("status",  "Статус проектов за неделю"),
+        BotCommand("tasks",   "Открытые задачи в Notion"),
     ])
 
 if __name__ == "__main__":
