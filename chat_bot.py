@@ -184,14 +184,21 @@ def load_wiki_index():
     index_path = os.path.join(WIKI_DIR, "_index.md")
     wiki_index = open(index_path).read() if os.path.exists(index_path) else ""
 
+    subdir_lines = []
     project_lines = []
     for label, path in entries:
         if label.startswith("projects/"):
             with open(path, "r") as f:
                 snippet = f.read(200).replace("\n", " ")
             project_lines.append(f"**{label}** — {snippet}")
+        elif "/" in label:  # wiki subdirectory files not covered by _index.md
+            with open(path, "r") as f:
+                snippet = f.read(200).replace("\n", " ")
+            subdir_lines.append(f"**{label}** — {snippet}")
 
     index_text = wiki_index
+    if subdir_lines:
+        index_text += "\n\n### Wiki subfolders\n" + "\n".join(subdir_lines)
     if project_lines:
         index_text += "\n\n### Active projects\n" + "\n".join(project_lines)
 
@@ -483,7 +490,7 @@ Rules:
             },
             {
                 "type": "text",
-                "text": f"USER MODEL — who the owner is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with them:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in their notes connects to what they're saying — bring it in naturally, don't announce it.\n- Match their energy: if they're thinking out loud, think with them. If they want a quick answer, give it.\n- Always reply in the same language as their message."
+                "text": f"USER MODEL — who the owner is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with them:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in their notes connects to what they're saying — bring it in naturally, don't announce it.\n- Match his energy: if they're thinking out loud, think with them. If they want a quick answer, give it.\n- Always reply in the same language as their message."
             }
         ]
 
