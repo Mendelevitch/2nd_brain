@@ -124,7 +124,49 @@ sudo systemctl daemon-reload
 sudo systemctl enable save-bot chat-bot
 sudo systemctl start save-bot chat-bot
 
-# ── 7. Syncthing (optional) ───────────────────────────────────
+# ── 7. Claude Code permissions ───────────────────────────────
+echo "→ Configuring Claude Code permissions for brain directory..."
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+mkdir -p "$HOME/.claude"
+
+python3 - <<PYEOF
+import json, os
+
+path = os.path.expanduser("$CLAUDE_SETTINGS")
+brain = "$BRAIN_DIR"
+
+new_rules = [
+    f"Read({brain}/**)",
+    f"Write({brain}/**)",
+    f"Edit({brain}/**)",
+    f"Bash(ls {brain}/**)",
+    f"Bash(ls -la {brain}/**)",
+    f"Bash(find {brain}/**)",
+    f"Bash(mv {brain}/**)",
+    f"Bash(cp {brain}/**)",
+    f"Bash(mkdir -p {brain}/**)",
+    f"Bash(cat {brain}/**)",
+    f"Bash(grep * {brain}/**)",
+]
+
+try:
+    with open(path) as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+
+settings.setdefault("permissions", {}).setdefault("allow", [])
+existing = set(settings["permissions"]["allow"])
+for rule in new_rules:
+    if rule not in existing:
+        settings["permissions"]["allow"].append(rule)
+
+with open(path, "w") as f:
+    json.dump(settings, f, indent=2)
+print(f"  Permissions written to {path}")
+PYEOF
+
+# ── 8. Syncthing (optional) ───────────────────────────────────
 echo ""
 echo "Syncthing keeps your wiki and raw files in sync with your Mac."
 read -p "Set up Syncthing now? [y/N]: " SYNC_CHOICE
@@ -156,7 +198,7 @@ if [ "$SYNC_CHOICE" = "y" ] || [ "$SYNC_CHOICE" = "Y" ]; then
     echo ""
 fi
 
-# ── 8. Done ───────────────────────────────────────────────────
+# ── 9. Done ───────────────────────────────────────────────────
 echo ""
 echo "================================"
 echo "  Done!"
