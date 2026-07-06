@@ -54,23 +54,26 @@ pip3 install -q python-telegram-bot[job-queue] openai anthropic \
              "markitdown[all]" --break-system-packages
 
 # ── 4. Collect config values ──────────────────────────────────
-echo ""
-echo "Now I need a few values. Get them from:"
-echo "  Telegram tokens → @BotFather (create 2 bots)"
-echo "  Your Telegram ID → @userinfobot"
-echo "  Anthropic key   → console.anthropic.com/settings/keys"
-echo "  OpenAI key      → platform.openai.com/api-keys (optional, for voice)"
-echo ""
+if [ -f "$BRAIN_DIR/_Claude/config.py" ]; then
+    echo "→ config.py already exists — skipping (your tokens are safe)"
+else
+    echo ""
+    echo "Now I need a few values. Get them from:"
+    echo "  Telegram tokens → @BotFather (create 2 bots)"
+    echo "  Your Telegram ID → @userinfobot"
+    echo "  Anthropic key   → console.anthropic.com/settings/keys"
+    echo "  OpenAI key      → platform.openai.com/api-keys (optional, for voice)"
+    echo ""
 
-read -p "SaveBot token (capture bot):  " BRAIN_BOT_TOKEN
-read -p "ChatBot token (chat bot):     " MIND_BOT_TOKEN
-read -p "Your Telegram user ID:        " OWNER_ID
-read -p "Anthropic API key:            " ANTHROPIC_API_KEY
-read -p "OpenAI API key (leave empty to skip voice): " OPENAI_API_KEY
+    read -p "SaveBot token (capture bot):  " BRAIN_BOT_TOKEN
+    read -p "ChatBot token (chat bot):     " MIND_BOT_TOKEN
+    read -p "Your Telegram user ID:        " OWNER_ID
+    read -p "Anthropic API key:            " ANTHROPIC_API_KEY
+    read -p "OpenAI API key (leave empty to skip voice): " OPENAI_API_KEY
 
-# ── 5. Write config.py ────────────────────────────────────────
-echo "→ Writing config.py..."
-cat > "$BRAIN_DIR/_Claude/config.py" << EOF
+    # ── 5. Write config.py ────────────────────────────────────────
+    echo "→ Writing config.py..."
+    cat > "$BRAIN_DIR/_Claude/config.py" << EOF
 BRAIN_BOT_TOKEN   = "$BRAIN_BOT_TOKEN"
 MIND_BOT_TOKEN    = "$MIND_BOT_TOKEN"
 ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
@@ -80,6 +83,7 @@ BRAIN_DIR         = "$BRAIN_DIR"
 NOTION_TOKEN      = ""
 NOTION_DB         = ""
 EOF
+fi
 
 # ── 6. Install systemd services ───────────────────────────────
 echo "→ Installing systemd services..."
