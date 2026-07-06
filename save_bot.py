@@ -14,6 +14,7 @@ import anthropic
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import BRAIN_BOT_TOKEN as TOKEN, OPENAI_API_KEY, ANTHROPIC_API_KEY, OWNER_ID, BRAIN_DIR
+from config import NOTION_TOKEN, NOTION_DB
 
 # ─── CONFIG ───────────────────────────────────────────────
 ALLOWED_USER = OWNER_ID
@@ -195,7 +196,7 @@ Reply with one word only:"""
         logging.warning(f"detect_category failed: {e}")
         return "thought"
 
-# ─── TASKS ────────────────────────────────────────────────
+# ─── NOTION ───────────────────────────────────────────────
 def parse_todo(text):
     """Use Haiku to extract tasks from text. Returns a list of task dicts."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -250,13 +251,92 @@ def write_sync_flag(filepath, flag):
         logging.warning(f"write_sync_flag failed: {e}")
 
 def add_notion_task(title, deadline=None, priority=None, source=None):
-    return False
+    """Add a task to Notion database."""
+    try:
+        props = {
+            "Name": {"title": [{"text": {"content": title}}]},
+        }
+        if deadline:
+            props["Due Date"] = {"date": {"start": deadline}}
+        if priority:
+            props["Priority"] = {"select": {"name": priority}}
+        if source:
+            props["Source"] = {"select": {"name": source}}
 
+        data = json.dumps({"parent": {"database_id": NOTION_DB}, "properties": props}).encode()
+        req = urllib.request.Request(
+            "https://api.notion.com/v1/pages",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {NOTION_TOKEN}",
+                "Content-Type": "application/json",
+                "Notion-Version": "2022-06-28"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            result = json.loads(r.read().decode())
+            logging.info(f"notion task added: {title}")
+            return True
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        logging.warning(f"add_notion_task failed: {e.code} {body}")
+        return False
+    except Exception as e:
+        logging.warning(f"add_notion_task failed: {e}")
+        return False
+
+# ─── NOTION READ ──────────────────────────────────────────
 def get_notion_tasks():
-    return []
+    """Return open tasks from Notion, grouped by status. Updates last_tasks_list."""
+    global last_tasks_list
+    try:
+        data = json.dumps({
+            "filter": {"property": "Status", "status": {"does_not_equal": "Done"}},
+            "sorts": [{"property": "Status", "direction": "ascending"}]
+        }).encode()
+        req = urllib.request.Request(
+            f"https://api.notion.com/v1/databases/{NOTION_DB}/query",
+            data=data,
+            headers={"Authorization": f"Bearer {NOTION_TOKEN}",
+                     "Content-Type": "application/json",
+                     "Notion-Version": "2022-06-28"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            results = json.loads(r.read().decode()).get("results", [])
+        tasks = []
+        for page in results:
+            props = page["properties"]
+            title = props["Name"]["title"]
+            name = title[0]["text"]["content"] if title else "(no title)"
+            status = props.get("Status", {}).get("status", {}).get("name", "")
+            due = (props.get("Due Date", {}).get("date") or {}).get("start", "")
+            tasks.append({"id": page["id"], "name": name, "status": status, "due": due})
+        last_tasks_list = tasks
+        return tasks
+    except Exception as e:
+        logging.warning(f"get_notion_tasks failed: {e}")
+        return []
 
 def mark_notion_done(page_id):
-    return False
+    """Set task status to Done in Notion."""
+    try:
+        data = json.dumps({"properties": {"Status": {"status": {"name": "Done"}}}}).encode()
+        req = urllib.request.Request(
+            f"https://api.notion.com/v1/pages/{page_id}",
+            data=data,
+            headers={"Authorization": f"Bearer {NOTION_TOKEN}",
+                     "Content-Type": "application/json",
+                     "Notion-Version": "2022-06-28"},
+            method="PATCH"
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+        return True
+    except Exception as e:
+        logging.warning(f"mark_notion_done failed: {e}")
+        return False
 
 def scan_for_hidden_todos(text, source, fpath=None):
     """Scan text for explicit action items and add them to Notion."""
@@ -428,6 +508,14 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_chat_id = update.effective_chat.id
     last_bot = context.bot
 
+    # Reply context
+    reply_ctx = ""
+    if msg.reply_to_message:
+        r = msg.reply_to_message
+        reply_author = r.from_user.full_name if r.from_user else "unknown"
+        reply_text = (r.text or r.caption or "")[:300]
+        reply_ctx = f"reply_to_author: {reply_author}\nreply_to_text: {reply_text}\n"
+
     if batch_task:
         batch_task.cancel()
 
@@ -461,6 +549,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg.forward_origin:
         forward_from = getattr(msg.forward_origin, 'sender_user', None)
         author = forward_from.full_name if forward_from else "unknown"
+        forwarded_by = msg.from_user.full_name if msg.from_user else "unknown"
 
         if msg.photo:
             group_id = msg.media_group_id or f"fwd_{timestamp}"
@@ -486,7 +575,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     category = detect_category(result.text_content[:500], is_forward=True)
                     content = (
                         f"category: {category}\nsource: document\n"
-                        f"forwarded_from: {author}\nfilename: {orig_name}\ndate: {timestamp}\n"
+                        f"original_author: {author}\nforwarded_by: {forwarded_by}\nfilename: {orig_name}\ndate: {timestamp}\n"
                         f"archive: {timestamp}_{orig_name}\n\n"
                         f"{result.text_content}"
                     )
@@ -502,7 +591,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Forwarded text/link
         url = extract_url(msg.text)
-        content = f"source: telegram_forward\nauthor: {author}\ndate: {timestamp}\n\nnot my thought - forwarded content:\n\n{msg.text or ''}"
+        content = f"source: telegram_forward\noriginal_author: {author}\nforwarded_by: {forwarded_by}\ndate: {timestamp}\n{reply_ctx}\nnot my thought - forwarded content:\n\n{msg.text or ''}"
         if url:
             is_yt = "youtube.com" in url or "youtu.be" in url
             title, text = scrape_url(url)
@@ -614,7 +703,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 content = f"source: external_link\ndate: {timestamp}\nurl: {url}\ntitle: {title or ''}\n\n{text[:10000] if text else msg.text}"
         else:
             category = detect_category(msg.text)
-            content = f"category: {category}\nsource: self_text\ndate: {timestamp}\n\n{msg.text}"
+            content = f"category: {category}\nsource: self_text\ndate: {timestamp}\n{reply_ctx}\n{msg.text}"
             fpath = os.path.join(RAW_DIR, f"{timestamp}_{category}.md")
             with open(fpath, "w") as f:
                 f.write(content)
