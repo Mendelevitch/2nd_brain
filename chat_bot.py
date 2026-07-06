@@ -211,7 +211,15 @@ def select_relevant_files(query, index_text, all_labels):
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
-        system="You are a search assistant. Given a user query and a file index, return ONLY the filenames (comma-separated) of files relevant to the query. Return at most 5 files. If none are relevant, return NONE.",
+        system="""You are a search assistant. Given a user query and a file index, return ONLY the filenames (comma-separated) of files most likely to contain what the user is looking for. Return at most 5 files. If none are relevant, return NONE.
+
+Think about intent, not just keywords. Examples:
+- "what did we discuss on the standup" → look for chat logs, meeting notes, project status files
+- "запись звонка / what was said on the call" → look for transcripts, call summaries, chat logs
+- "статус проекта" → look for status files, project READMEs, active project notes
+- "кто такой X" → look for people files, mentions in project notes
+
+Match files by what they likely *contain*, not just whether the query words appear in the filename.""",
         messages=[{"role": "user", "content": f"Query: {query}\n\nIndex:\n{index_text}"}]
     )
     result = response.content[0].text.strip()
