@@ -180,6 +180,20 @@ Cowork (on Mac)
 
 ---
 
+## Group chats
+
+Add the Mind Bot to any Telegram group — it will listen silently and respond when @mentioned.
+
+**Important:** by default Telegram's Privacy Mode is enabled, which means the bot only sees @mentions and `/commands` — and only in groups it was added to *after* you turn it off. You need to disable it:
+
+1. Open @BotFather
+2. `/mybots` → select your Mind Bot → Bot Settings → Group Privacy → **Turn off**
+3. Remove the bot from any existing groups and re-add it (or make it admin)
+
+Without this step the bot will appear to work in some groups but not others.
+
+---
+
 ## Guest mode
 
 Add friends to `guests.json`:
