@@ -38,8 +38,10 @@ Each raw file should declare its source. Handle them differently:
 **`source: thought`** (or no source field)
 The owner's own thinking — ideas, observations, opinions, decisions. Treat as primary material. Extract and atomize freely. Preserve voice. These are the most valuable pieces of information shared with you - treat them with care and respect. 
 
-**`source: conversation`**
-A dialogue, call transcript, or back-and-forth with another person or AI. The owner's contributions are primary material. Other participants' ideas are secondary — include them, if they are on topic, but mention the author or source. Don't write up other people's positions as if they were the owner's. If the conversation produced a decision or conclusion, that's wiki-worthy; the discussion that got there usually isn't.
+**`source: conversation`** or **`source: granola`**
+A dialogue, call transcript, or back-and-forth with another person or AI. The owner's contributions are primary material. Other participants' ideas are secondary — include them, if they are on topic, but mention the author or source. Don't write up other people's positions as if they were the owner's.
+
+If the file contains a `Meeting ID:` field (Granola export), construct the source URL as `https://notes.granola.ai/d/<meeting-id>` and include it in every wiki entry this file feeds, alongside the archive link. Format: `→ [Meeting recording](https://notes.granola.ai/d/<meeting-id>)`. If the conversation produced a decision or conclusion, that's wiki-worthy; the discussion that got there usually isn't.
 
 **`source: external_link`**
 A URL pointing to an article, video, podcast, or other external content. Attempt to fetch and read the content. If accessible: extract only what's relevant to the owner's existing wiki topics or open questions — don't summarize the whole thing. If inaccessible (paywalled, restricted, dead): create a stub entry noting the URL and why it was flagged, and log it as unprocessed. Do not fabricate content about what the link might contain. Think, why would the owner save this link, connect to the topics of thinking and ideation. 
