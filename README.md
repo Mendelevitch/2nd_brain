@@ -256,6 +256,19 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 
 ---
 
+## Backlog
+
+### Pending
+- **Syncthing in install.sh** — automate Syncthing installation and folder setup as part of `install.sh`. Currently requires manual setup following `docs/setup-syncthing.md`.
+- **Cowork routines setup guide** — add instructions (or a prompt) for creating the standard scheduled routines in Cowork after install. Currently users have to create them manually.
+- **Shared wiki** — multiple people contributing to and reading from one wiki. Complex architecture problem; leaving as a future idea.
+
+### Done
+- ~~Privacy Mode docs~~ — added to README (Group chats section)
+- ~~Personalisation removed~~ — all "owner name" references stripped from public repo
+
+---
+
 ## Licence
 
 MIT
