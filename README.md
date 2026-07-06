@@ -218,6 +218,7 @@ Guests get their own conversation channel with your Mind Bot. The bot uses your 
 | `prompts/weekly-planning.md` | Every Monday ~9:30 | Reviews todos, suggests the week's tasks |
 | `prompts/wiki-curate.md` | Every Friday | Strengthens links between wiki pages |
 | `prompts/synthesize.md` | On demand | Cross-wiki synthesis — finds patterns, tensions, and evolutions across all entries |
+| `prompts/weekly-thinking-digest.md` | Every Friday ~12:00 | Friday evening digest — surfaces interesting ideas, unexpected intersections, and patterns from the week's wiki entries |
 
 ---
 
