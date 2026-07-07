@@ -224,3 +224,13 @@ if [ "$SYNC_CHOICE" != "y" ] && [ "$SYNC_CHOICE" != "Y" ]; then
     echo "  4. Set up Syncthing later: see docs/setup-syncthing.md"
 fi
 echo ""
+echo "================================"
+echo "  Set up Cowork routines"
+echo "================================"
+echo ""
+echo "Open Claude Cowork and run this prompt once to create"
+echo "all 5 scheduled routines (wiki update, research, curation,"
+echo "thinking digest, weekly planning):"
+echo ""
+echo "  $(cat $REPO_DIR/templates/setup-cowork-routines.md)"
+echo ""

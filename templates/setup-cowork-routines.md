@@ -20,9 +20,7 @@ Read transcripts of calls to find and capture details, ideas, facts, important t
 ## 2. Research
 **Schedule:** Every Monday at ~2:00  
 **Instructions:**
-Find missing and unresearched topics and ideas in wiki, write research briefs, run research for each, enrich wiki, marking sources of information and the fact that they are from automated research.
-
-Provide a single output in chat, describing what was done in short concise manner, provide most interesting findings as bullet points.
+Run the prompt in prompts/research.md
 
 ---
 
