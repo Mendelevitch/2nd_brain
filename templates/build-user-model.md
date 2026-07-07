@@ -6,61 +6,91 @@ Pick the path that fits you:
 
 ---
 
-## Option A — You've been using ChatGPT
+## Option A — Let Cowork build it from your brain
 
-1. Open any substantial ChatGPT conversation
-2. Paste the prompt below
-3. Copy the output into `user/user-model.md`
+Run this prompt in Cowork after your wiki has some content. It reads everything you've captured and writes the model from evidence.
 
-## Option B — You've been using Claude
+```
+Read everything in /raw, /wiki, and /archive. Your job is to build an accurate user model of the person who wrote all of this.
 
-1. Open any substantial Claude conversation
-2. Paste the prompt below
-3. Copy the output into `user/user-model.md`
+Do not invent anything. Every claim you make should be grounded in something they actually wrote, said, or saved. If you're uncertain — say so. If something is contradictory — flag it.
 
-## Option C — Starting fresh
+Be a biographer, not a flatterer. Avoid generic compliments ("curious thinker", "strategic mind"). Use specific language: what domains, what tensions, what recurring patterns, what they explicitly said about themselves.
 
-Open `onboarding-cowork.md` in Cowork and point it at your brain directory. It will interview you and fill everything in.
+Write the model in this format and save it to user/user-model.md:
 
 ---
 
-## The prompt (for Options A and B)
-
-```
-Based on everything you know about me from our conversations, write a structured user model for a personal AI assistant. Be specific and concrete — use things I've actually said, not generic descriptions.
-
-Structure it exactly like this:
-
-# [My name if you know it, otherwise "User"] — User Model
+# [Name if known] — User Model
 
 ## Identity
-[Who I am, what I do, where I'm based — based on what I've told you]
+Who they are. What they do professionally. Where they operate. What role they seem to occupy — founder, operator, creative, advisor, something else.
 
 ## Current focus
-[Bullet list of projects, problems, or areas I've been actively working on]
+What they're actively working on right now. Projects, problems, transitions. Use specific names and details from the notes, not summaries.
 
-## How I think
-[My cognitive style. How I approach problems. What I find interesting. What patterns you've noticed in how I reason.]
+## How they think
+Their cognitive style — do they reason bottom-up or top-down? Do they think in systems or in stories? How do they handle ambiguity? What do they find genuinely interesting vs. professionally relevant? What patterns repeat in how they attack a problem?
+
+## What they care about
+Values and obsessions that show up repeatedly. Not stated values — revealed values, the ones that surface when they argue, when they push back, when they get excited.
 
 ## Communication preferences
-[How direct I am. Whether I prefer short answers or depth. What I push back on. What I respond well to.]
+How direct are they? What do they push back on? What kind of answers frustrate them? What do they respond well to? Do they want short answers or developed ones? What did they explicitly ask an AI to do differently?
 
 ## Intellectual influences
-[People, fields, or ideas I reference or seem shaped by]
+People, books, disciplines, or ideas they reference. What fields seem to have shaped how they think, even if they don't name them directly.
 
 ## Contrarian positions
-[Things I believe or have argued that go against mainstream views in my field]
+Things they believe that go against mainstream views in their field or culture. Things they've argued with conviction. Positions that seem personal, not just adopted.
+
+## Blind spots and gaps
+What topics are conspicuously absent? What do they seem to avoid or resist? Where does their thinking seem weakest or least developed? Be honest — this is useful.
 
 ## What to avoid
-[Things that frustrate me or that I've explicitly asked you not to do]
+Things that frustrate them. Behaviours or responses they've explicitly rejected. Patterns that create friction.
 
-Be honest and specific. If you're not sure about something, say so rather than inventing it. If there are gaps, note them — I'll fill them in manually.
+---
+
+Then create a shorter user/user-model-public.md — same structure, but:
+- Remove current projects and anything operationally sensitive
+- Keep identity, thinking style, communication preferences, intellectual influences
+- This version is shown to guests
 ```
 
 ---
 
-## After you get the output
+## Option B — You've been using ChatGPT or Claude
 
-1. Save it as `user/user-model.md`
-2. Read it — correct anything wrong or outdated
-3. Create a shorter `user/user-model-public.md` — same structure, but remove anything too personal (current projects, specific beliefs). This version is shown to guests.
+1. Open a substantial conversation (or export your memory)
+2. Paste this prompt:
+
+```
+Based on everything you know about me from our conversations, write a structured user model for a personal AI assistant. Be specific — use things I've actually said, not generic descriptions.
+
+Every claim should be grounded in something I've written or said. Flag anything you're guessing at. If there are gaps, note them — I'll fill them in manually.
+
+Structure it like this:
+
+# [My name if you know it] — User Model
+
+## Identity
+## Current focus
+## How I think
+## What I care about
+## Communication preferences
+## Intellectual influences
+## Contrarian positions
+## Blind spots and gaps
+## What to avoid
+```
+
+3. Save the output to `user/user-model.md`
+4. Read it — fix anything wrong or outdated
+5. Create `user/user-model-public.md` — same structure, remove anything too personal
+
+---
+
+## Option C — Starting from scratch
+
+Open `onboarding-cowork.md` in Cowork. It will interview you directly and write the model from your answers.
