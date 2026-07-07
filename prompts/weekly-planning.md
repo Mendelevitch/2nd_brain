@@ -24,18 +24,22 @@ Do not include tasks with `Status: Backlog` unless they have a `Due Date` fallin
 
 For each task note: Name, Due Date (if set), Source.
 
-## Step 2 — Suggest new todos from insights
+## Step 2 — Suggest new todos from insights AND the five-year plan
 
 Read the most recent file in `/insights/`.
 Read all files in `/wiki/`.
+Read `wiki/five-year-plan-2026-2031.md` (current phase, checkpoints, «Ближайшие 14 дней»), `wiki/strategic-bets-2026.md` (Horizon 1), and the most recent file in `projects/five-year-plan/weekly/` (what was done / not done last week).
 
-Based on the latest digest and the current state of the wiki, propose **3–5 strategic tasks** for the coming week. These should be:
-- Concrete actions, not abstract ideas
-- Connected to active projects or open questions in the wiki
-- Realistically completable in 1–4 hours each
-- Things that would move something forward, not just maintenance
+Propose **3–7 strategic tasks** for the coming week, organized into the four plan sections:
 
-Tag each as `[suggested]`.
+- **Якорь (Flo):** progress toward the Social Lead role / anchor income.
+- **Side-двигатель:** InLab, sprints, тёплые интро, outreach drafts.
+- **Категория:** the topic for this week's post (suggest a concrete one from wiki: trust framework, LLM visibility, Reddit) — for the Wednesday 10:00 slot.
+- **Семья и здоровье:** from the plan (финансовый час, fertility/анализы, виза отца, ужин — приглашения за 2 недели до третьего четверга). **This section is never empty** (plan rule 5).
+
+Tasks must be: concrete actions, completable in 1–4 hours, moving a plan milestone forward — not maintenance.
+
+Tag each as `[suggested]`. Carry-over tasks keep a counter: «(2-я неделя)», «(3-я неделя)» — three weeks in a row = a question for the monthly check-in, not a guilt trip.
 
 ## Step 3 — Present for review
 
@@ -89,6 +93,10 @@ For tasks that were **not approved** (skipped by the user):
 
 Note: `Status` field values: `Pending Review` / `This Week` / `Postponed` / `Backlog` / `Done`.
 
-## Step 6 — Done
+## Step 6 — Write the weekly plan file
+
+Write the final week plan to `projects/five-year-plan/weekly/YYYY-Wnn.md` (ISO week number): the approved tasks grouped by the four sections (Якорь / Side-двигатель / Категория / Семья и здоровье), with carry-over counters and the chosen post topic. One page max. Clear, factual, no motivational filler. This file is the input for the monthly check-in summary (`monthly-goals-checkin`).
+
+## Step 7 — Done
 
 Git commits are handled automatically via cron. No manual commit needed. Notion changes persist on Notion's side.

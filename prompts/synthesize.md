@@ -51,7 +51,7 @@ Always create a new file — never update an existing one. Use today's date for 
 For each raw file from the past 7 days with `source: external_link` or `source: transcript`:
 - Title (or inferred topic if no title)
 - Original URL
-- 3–5 sentences in Russian summarising the key points — filtered through the owner's interests and wiki topics. Skip anything that isn't relevant to those domains.
+- 3–5 sentences in Russian summarising the key points — filtered through the owner's interests: brand strategy, AI, creativity, advertising, media, systems, culture, business. Skip anything that isn't relevant to those domains.
 - One sentence on why it's worth re-reading (or skip if it isn't).
 
 If the source is an ad campaign or case study (see translate.md for definition), note it as **📌 Рекламный кейс** and link to the wiki reference entry that was created from it.
@@ -64,10 +64,10 @@ Order by date saved. If no external sources were saved this week, omit the secti
 
 When synthesizing, track where ideas came from. The wiki should distinguish between:
 
-- **The owner's own positions** — formed through his own thinking or conversation (`source: thought`, `source: conversation`)
+- **the owner's own positions** — formed through his own thinking or conversation (`source: thought`, `source: conversation`)
 - **External ideas he's engaging with** — drawn from links, transcripts, documents
 
-A pattern that emerges entirely from external sources is not the same as a recurring theme in the owner's own thinking. Flag this distinction when it matters — e.g. "This idea appears repeatedly from external sources but the owner hasn't yet stated a position of their own."
+A pattern that emerges entirely from external sources is not the same as a recurring theme in the owner's own thinking. Flag this distinction when it matters — e.g. "the owner has flagged this idea repeatedly from external sources but hasn't yet stated a position of his own."
 
 Conversely: if an external source directly confirms, contradicts, or sharpens something already in the owner's thinking, that intersection is synthesis-worthy.
 
