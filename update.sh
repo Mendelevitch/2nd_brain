@@ -23,11 +23,19 @@ pip3 install -q python-telegram-bot[job-queue] openai anthropic numpy \
 echo "   ✓ dependencies up to date"
 echo ""
 
-# ── 3. Copy updated bot files ─────────────────────────────────
+# ── 3. Copy updated bot files and prompts ────────────────────
 echo "→ Updating bot files..."
 cp "$REPO_DIR/chat_bot.py" "$CLAUDE_DIR/chat_bot.py"
 cp "$REPO_DIR/save_bot.py" "$CLAUDE_DIR/save_bot.py"
 echo "   ✓ bot files updated"
+
+echo "→ Updating prompts..."
+mkdir -p "$BRAIN_DIR/prompts"
+for f in "$REPO_DIR/prompts/"*.md; do
+    fname="$(basename "$f")"
+    cp "$f" "$BRAIN_DIR/prompts/$fname"
+    echo "   ✓ prompts/$fname"
+done
 echo ""
 
 # ── 4. Restart services ───────────────────────────────────────
