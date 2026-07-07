@@ -49,7 +49,7 @@ cp "$REPO_DIR/templates/guests.example.json" "$BRAIN_DIR/guests.json"
 
 # ── 3. Install dependencies ───────────────────────────────────
 echo "→ Installing Python dependencies..."
-pip3 install -q python-telegram-bot[job-queue] openai anthropic \
+pip3 install -q python-telegram-bot[job-queue] openai anthropic numpy \
              newspaper3k lxml_html_clean yt-dlp \
              "markitdown[all]" --break-system-packages
 
@@ -62,7 +62,7 @@ else
     echo "  Telegram tokens → @BotFather (create 2 bots)"
     echo "  Your Telegram ID → @userinfobot"
     echo "  Anthropic key   → console.anthropic.com/settings/keys"
-    echo "  OpenAI key      → platform.openai.com/api-keys (optional, for voice)"
+    echo "  OpenAI key      → platform.openai.com/api-keys (for voice + wiki search)"
     echo ""
 
     read -p "SaveBot token (capture bot):  " BRAIN_BOT_TOKEN
