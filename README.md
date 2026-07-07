@@ -23,7 +23,7 @@ You → Telegram → SaveBot → /raw → Cowork → /wiki → ChatBot → You
 **ChatBot** features:
 - Two-pass wiki search (index scan → full file load) across `/wiki` and `/projects`
 - Group chat support — @mention the bot in a group; it remembers context across the conversation
-- `/think` — deeper mode, acts as a sparring partner
+- `/think` — deeper mode using Claude Sonnet, acts as a sparring partner
 - `/browse` — adds DuckDuckGo results to context
 - Guest mode — friends get their own conversation channel with your bot
 - `??` — saves and closes the session

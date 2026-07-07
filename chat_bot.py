@@ -449,7 +449,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         web_extra = ""
 
-    model = "claude-haiku-4-5-20251001"
+    model = "claude-sonnet-4-6" if think_mode else "claude-haiku-4-5-20251001"
 
     if is_guest:
         is_first_message = len(sessions[user_id]) == 1
@@ -592,7 +592,7 @@ Relevant knowledge:
     if len(group_sessions[chat_id]) > 40:
         group_sessions[chat_id] = group_sessions[chat_id][-40:]
 
-    model = "claude-haiku-4-5-20251001"
+    model = "claude-sonnet-4-6" if group_think.get(chat_id) else "claude-haiku-4-5-20251001"
     response = client.messages.create(
         model=model,
         max_tokens=800,
@@ -747,7 +747,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(app):
     from telegram import BotCommand
     await app.bot.set_my_commands([
-        BotCommand("think",   "Режим глубокого анализа"),
+        BotCommand("think",   "Режим глубокого анализа (Sonnet)"),
         BotCommand("browse",  "Поиск в интернете"),
         BotCommand("digest",  "Последний thinking digest"),
         BotCommand("status",  "Статус проектов за неделю"),
