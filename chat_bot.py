@@ -184,17 +184,27 @@ def load_wiki_index():
     index_path = os.path.join(WIKI_DIR, "_index.md")
     wiki_index = open(index_path).read() if os.path.exists(index_path) else ""
 
+    def make_snippet(path):
+        with open(path, "r") as f:
+            content = f.read()
+        headers = [l.strip() for l in content.split("\n") if l.startswith("## ")]
+        if headers:
+            if len(headers) <= 8:
+                return " | ".join(headers)
+            # For long append-only logs: show date range + sample entries
+            import re
+            dates = [m.group(1) for h in headers for m in [re.search(r'(\d{4}-\d{2}-\d{2})', h)] if m]
+            date_range = f"[{dates[0]} → {dates[-1]}, {len(headers)} entries]" if dates else f"[{len(headers)} entries]"
+            return f"{date_range} {headers[0]} | ... | {headers[-1]}"
+        return content[:200].replace("\n", " ")
+
     subdir_lines = []
     project_lines = []
     for label, path in entries:
         if label.startswith("projects/"):
-            with open(path, "r") as f:
-                snippet = f.read(200).replace("\n", " ")
-            project_lines.append(f"**{label}** — {snippet}")
+            project_lines.append(f"**{label}** — {make_snippet(path)}")
         elif "/" in label:  # wiki subdirectory files not covered by _index.md
-            with open(path, "r") as f:
-                snippet = f.read(200).replace("\n", " ")
-            subdir_lines.append(f"**{label}** — {snippet}")
+            subdir_lines.append(f"**{label}** — {make_snippet(path)}")
 
     index_text = wiki_index
     if subdir_lines:
@@ -220,31 +230,240 @@ Think about intent, not just keywords. Examples:
 - "кто такой X" → look for people files, mentions in project notes
 
 Match files by what they likely *contain*, not just whether the query words appear in the filename.""",
-        messages=[{"role": "user", "content": f"Query: {query}\n\nIndex:\n{index_text}"}]
+        messages=[{"role": "user", "content": f"Today's date: {__import__('datetime').date.today()}\n\nQuery: {query}\n\nIndex:\n{index_text}"}]
     )
     result = response.content[0].text.strip()
+    logging.info(f"Pass1 query={query[:80]!r} → {result[:200]}")
     if result == "NONE":
         return []
     selected = [f.strip() for f in result.split(",")]
     valid = set(all_labels)
-    return [f for f in selected if f in valid]
+    found = [f for f in selected if f in valid]
+    logging.info(f"Pass1 valid files: {found}")
+    return found
+
+# ─── RAG ──────────────────────────────────────────────────
+import numpy as np
+
+_rag_index = []   # list of {label, text, embedding}
+_rag_mtimes = {}  # path → mtime at index time
+
+def _chunk_file(label, path):
+    """Split a markdown file into section chunks."""
+    with open(path, "r") as f:
+        content = f.read()
+    chunks = []
+    current_header = ""
+    current_lines = []
+    for line in content.split("\n"):
+        if line.startswith("## "):
+            if current_lines:
+                text = (current_header + "\n" + "\n".join(current_lines)).strip()
+                if text:
+                    chunks.append({"label": label, "text": text[:3000]})
+            current_header = line
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_lines:
+        text = (current_header + "\n" + "\n".join(current_lines)).strip()
+        if text:
+            chunks.append({"label": label, "text": text[:3000]})
+    # fallback: no sections → whole file as one chunk
+    if not chunks:
+        chunks.append({"label": label, "text": content[:3000]})
+    return chunks
+
+def _embed(texts):
+    """Embed a list of texts, return numpy array (n, dims)."""
+    resp = oai_client.embeddings.create(model="text-embedding-3-small", input=texts)
+    return np.array([d.embedding for d in resp.data], dtype="float32")
+
+def build_rag_index():
+    """Build or refresh the in-memory RAG index."""
+    global _rag_index, _rag_mtimes
+    _, entries_dict, _ = load_wiki_index()
+    new_chunks = []
+    new_mtimes = {}
+    for label, path in entries_dict.items():
+        mtime = os.path.getmtime(path)
+        new_mtimes[path] = mtime
+        chunks = _chunk_file(label, path)
+        for c in chunks:
+            new_chunks.append({"label": c["label"], "text": c["text"]})
+    if not new_chunks:
+        return
+    texts = [c["text"] for c in new_chunks]
+    # embed in batches of 100
+    all_embeddings = []
+    for i in range(0, len(texts), 100):
+        all_embeddings.append(_embed(texts[i:i+100]))
+    embeddings = np.concatenate(all_embeddings, axis=0)
+    for i, c in enumerate(new_chunks):
+        c["embedding"] = embeddings[i]
+    _rag_index = new_chunks
+    _rag_mtimes = new_mtimes
+    logging.info(f"RAG index built: {len(_rag_index)} chunks from {len(entries_dict)} files")
+
+def rag_search(query, top_k=6):
+    """Return top_k relevant chunks for the query."""
+    if not _rag_index:
+        return ""
+    q_emb = _embed([query])[0]
+    scores = []
+    for c in _rag_index:
+        score = float(np.dot(q_emb, c["embedding"]) /
+                      (np.linalg.norm(q_emb) * np.linalg.norm(c["embedding"]) + 1e-9))
+        scores.append((score, c))
+    scores.sort(key=lambda x: -x[0])
+    top = scores[:top_k]
+    parts = [f"### {c['label']}\n{c['text']}" for _, c in top]
+    logging.info(f"RAG top files: {[c['label'] for _, c in top]}")
+    return "\n\n".join(parts)
 
 def load_wiki(query=None):
-    index_text, entries_dict, all_labels = load_wiki_index()
-    if not all_labels:
-        return ""
-    if query:
-        relevant = select_relevant_files(query, index_text, all_labels)
-        files_to_load = relevant if relevant else all_labels[:3]
-    else:
-        files_to_load = all_labels
-    texts = []
-    for label in files_to_load:
-        path = entries_dict.get(label)
-        if path and os.path.exists(path):
-            with open(path, "r") as f:
-                texts.append(f"### {label}\n{f.read()}")
-    return "\n\n".join(texts)
+    if not query:
+        return rag_search("general overview", top_k=10)
+    return rag_search(query)
+
+def _agentic_wiki_search(query: str) -> str:
+    """Sonnet with tools finds relevant wiki/project content for the query."""
+    tools = [
+        {
+            "name": "list_dir",
+            "description": "List files and subdirectories in a directory",
+            "input_schema": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Absolute path to directory"}},
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "read_file",
+            "description": "Read the contents of a file",
+            "input_schema": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Absolute path to file"}},
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "search_files",
+            "description": "Search for a text pattern across files in a directory (recursive grep)",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Search pattern (case-insensitive)"},
+                    "path": {"type": "string", "description": "Directory to search in"}
+                },
+                "required": ["pattern", "path"]
+            }
+        },
+        {
+            "name": "finish",
+            "description": "Return the collected context to answer the user query",
+            "input_schema": {
+                "type": "object",
+                "properties": {"context": {"type": "string", "description": "Relevant content extracted from the wiki"}},
+                "required": ["context"]
+            }
+        }
+    ]
+
+    def run_tool(name, inp):
+        if name == "list_dir":
+            p = inp["path"]
+            if not os.path.exists(p):
+                return f"Directory not found: {p}"
+            items = []
+            for entry in sorted(os.scandir(p), key=lambda e: e.name):
+                items.append(("📁 " if entry.is_dir() else "📄 ") + entry.name)
+            return "\n".join(items) or "(empty)"
+        elif name == "read_file":
+            p = inp["path"]
+            if not os.path.exists(p):
+                return f"File not found: {p}"
+            with open(p, "r") as f:
+                content = f.read()
+            if len(content) > 15000:
+                return content[:15000] + f"\n\n[... truncated, {len(content)} chars total]"
+            return content
+        elif name == "search_files":
+            import subprocess
+            result = subprocess.run(
+                ["grep", "-r", "-i", "-l", "--include=*.md", inp["pattern"], inp["path"]],
+                capture_output=True, text=True, timeout=5
+            )
+            return result.stdout.strip() or "(no matches)"
+        elif name == "finish":
+            return inp["context"]
+
+    today = __import__('datetime').date.today()
+    system = f"""You are a search agent for a personal knowledge base. Today is {today}.
+
+Knowledge base map:
+- {WIKI_DIR}/_index.md — master index of all wiki articles (start here for topic/concept queries)
+- {WIKI_DIR}/ideas.md — product ideas, naming sparks, creative concepts
+- {WIKI_DIR}/reflections.md — personal reflections and observations
+- {WIKI_DIR}/people/ — profiles of people (colleagues, partners, contacts)
+- {WIKI_DIR}/people-index.md — index of all people profiles
+- {WIKI_DIR}/refs/ — reference materials (ad campaigns, external links)
+- {WIKI_DIR}/unmute/ — wiki articles specifically about the Unmute project
+- {PROJECTS_DIR}/<name>/ — one folder per active project: unmute, flo, inlab, lesta, sreda, tovarish-major, uc, безтендера, five-year-plan
+  - chat-log.md — meeting notes, standups, group chat extracts (dated sections)
+  - README or other .md files — project status, research, docs
+
+Search strategy:
+1. For topic/concept queries → read {WIKI_DIR}/_index.md first
+2. For meeting/call/standup queries → search_files() with keyword + date, focus on projects/*/chat-log.md
+3. For people queries → check {WIKI_DIR}/people-index.md, then read the specific profile
+4. For project status → go directly to {PROJECTS_DIR}/<project name>/
+5. Follow links between files when they lead to more relevant content
+
+Be efficient — 2-4 tool calls is usually enough. Never read the whole wiki. When you have the content, call finish()."""
+
+    messages = [{"role": "user", "content": f"Find content relevant to this query: {query}"}]
+
+    for _ in range(10):  # max 10 tool calls
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=4000,
+            system=system,
+            tools=tools,
+            messages=messages
+        )
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            # extract text if model answered directly
+            for block in response.content:
+                if hasattr(block, "text"):
+                    return block.text
+            return ""
+
+        tool_results = []
+        finished = None
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            logging.info(f"tool: {block.name}({list(block.input.values())[0]!r:.80})")
+            result = run_tool(block.name, block.input)
+            if block.name == "finish":
+                finished = result
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result if block.name != "finish" else "done"
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+
+        if finished is not None:
+            usage = response.usage
+            logging.info(f"Agentic wiki search done in {len(messages)//2} rounds | tokens: {usage.input_tokens} in / {usage.output_tokens} out")
+            return finished
+
+    return ""
 
 def web_search(query, max_results=3):
     """Search DuckDuckGo and return short snippets."""
@@ -432,8 +651,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sessions[user_id].append({"role": "user", "content": text})
 
+    thinking_msg = await msg.reply_text("…")
+
     user_model = load_user_model(public=is_guest)
-    wiki_context = load_wiki() if not is_guest else load_wiki(query=text)
+    wiki_context = load_wiki(query=text)
 
     think_mode = user_think_mode.get(user_id, False) and not is_guest
     browse_mode = user_browse_mode.get(user_id, False) and not is_guest
@@ -457,7 +678,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system_blocks = [
             {
                 "type": "text",
-                "text": f"""You are a sharp thinking partner. You've absorbed a particular way of thinking — creative, strategic, systems-oriented.
+                "text": f"""You are a sharp thinking partner. You think like the owner — a creative director, brand strategist and systems thinker.
 
 Your job is not to answer questions from a database. Your job is to help the guest think better about their ideas — challenge assumptions, find unexpected angles, surface what's really interesting underneath the surface.
 
@@ -468,10 +689,10 @@ Relevant context and frameworks you can draw on:
 {wiki_context}
 
 Rules:
-- Never mention "wiki", "knowledge base", "the owner's notes" or any internal system. The guest doesn't know about any of that.
+- Never mention "wiki", "knowledge base", "Misha's notes" or any internal system. The guest doesn't know about any of that.
 - Don't say "I don't have information on X" — either engage with what you know or ask a question that moves the conversation forward.
 - If the guest asks something factual you're uncertain about, engage with the idea first, then note what you'd want to verify.
-- Apply the thinking frameworks and perspectives from your context to whatever the guest brings up.
+- Apply Misha's perspective and frameworks to whatever the guest brings up.
 - Brainstorm as an equal — build on their ideas, throw in unexpected angles, yes-and and then challenge. This is a creative conversation between two people thinking together, not Q&A.
 - Always reply in the same language as the guest's message. {HTML_FORMAT_INSTRUCTION}
 {greeting_instruction}"""
@@ -481,28 +702,26 @@ Rules:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are a wise thinking partner. The owner's knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — full knowledge base:\n{wiki_context}",
+                "text": f"You are a wise thinking partner for the owner — a creative director and brand strategist.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
                 "type": "text",
-                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how the owner sees the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside their world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
+                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how Misha sees the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
             }
         ]
     else:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are the owner's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything they know:\n\n{wiki_context}",
+                "text": f"You are the owner's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything he knows:\n\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
                 "type": "text",
-                "text": f"USER MODEL — who the owner is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with them:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in their notes connects to what they're saying — bring it in naturally, don't announce it.\n- Match his energy: if they're thinking out loud, think with them. If they want a quick answer, give it.\n- Always reply in the same language as their message."
+                "text": f"USER MODEL — who Misha is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with him:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in his notes connects to what he's saying — bring it in naturally, don't announce it.\n- Match his energy: if he's thinking out loud, think with him. If he wants a quick answer, give it.\n- Always reply in the same language as his message."
             }
         ]
-
-    thinking_msg = await msg.reply_text("…")
 
     response = client.messages.create(
         model=model,
@@ -524,10 +743,9 @@ async def handle_group_mention(update: Update, context: ContextTypes.DEFAULT_TYP
     thinking = await update.message.reply_text("…")
     chat_id = update.effective_chat.id
 
-    # Build wiki query: session history + recent buffer messages + current query
+    # Pass 1 uses only the user's query — not chat history or bot responses
     session_text = " ".join(m["content"] for m in group_sessions.get(chat_id, [])[-20:])
-    buffer_text = " ".join(m["text"] for m in group_buffers.get(chat_id, [])[-20:])
-    wiki_query = f"{session_text} {buffer_text} {query}".strip()
+    wiki_query = query or session_text[:200]
     wiki = load_wiki(query=wiki_query)
     user_model = load_user_model(public=True)
 
@@ -758,6 +976,7 @@ if __name__ == "__main__":
     load_group_state()
     load_group_sessions()
     load_group_buffers()
+    build_rag_index()
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     # Track members joining
     from telegram.ext import ChatMemberHandler
