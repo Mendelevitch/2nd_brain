@@ -79,7 +79,18 @@ sudo systemctl enable save-bot chat-bot watch-bots
 sudo systemctl start save-bot chat-bot watch-bots
 ```
 
-### 6. Set up Syncthing (optional, Mac/Pi only)
+### 6. Set up your Mac (if using Cowork + Syncthing)
+
+On your Mac, clone the repo and run:
+
+```bash
+git clone https://github.com/yourusername/2nd-brain.git
+cd 2nd-brain && ./setup-mac.sh
+```
+
+This creates `~/Brain/` with the right folder structure, copies all Cowork prompts, and prints Syncthing setup instructions.
+
+### 7. Set up Syncthing (optional, Mac/Pi only)
 
 ---
 
