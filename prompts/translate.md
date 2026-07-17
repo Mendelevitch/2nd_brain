@@ -68,7 +68,7 @@ A transcript of a Telegram group chat episode (bounded by a 4-hour silence gap).
 
 Process as follows:
 1. Read the full transcript and identify distinct topic threads — a single episode often contains several unrelated conversations.
-2. For each thread, determine if it relates to a project in `/projects/`. Check by folder name and by context (a chat named "unmute" will discuss unmute work, but also inlab, flo, etc.).
+2. For each thread, determine if it relates to a project in `/projects/`. Check by folder name and by context.
 3. For each project touched: append a dated section to `/projects/{name}/chat-log.md` with extracted todos, decisions, and ideas. Format: `## YYYY-MM-DD — {chat title}`, then bullet points with author attribution.
 4. For threads not linked to any specific project: extract ideas/decisions to wiki as usual (`source: conversation` rules apply).
 5. Do NOT create a single monolithic entry — split by topic/project thread.
@@ -100,7 +100,7 @@ Kept for continuity now that Granola (above) is the primary meeting source. This
 
 A Notion page where tl;dv auto-dumps call transcripts (and occasionally notes/links) as child pages. The page is the inbox; its child pages are the "files." Treat each new child page exactly like a raw file.
 
-Page: **TLDV** — ID `3893fedb44a080bbaca4dc57246eac56` (https://www.notion.so/<your-workspace>/TLDV-<page-id>)
+Page: **TLDV** — find the page ID in your Notion workspace and set it here.
 
 **Dedup via title marker.** A child page is considered processed once its title starts with `✅ `. That marker (set by us after processing) is the only record — there is no separate ledger.
 
@@ -190,7 +190,7 @@ After Pass 2 wiki updates are done, update people profiles in `wiki/people/`.
 
 ## Текущее состояние (YYYY-MM)
 
-## Динамика отношений с Мишей
+## Динамика отношений с владельцем
 
 ## Идейные треды
 
@@ -206,7 +206,7 @@ After Pass 2 wiki updates are done, update people profiles in `wiki/people/`.
 **After all wiki edits are complete, you MUST move every processed raw file from `/raw` to `/archive` using bash:**
 
 ```bash
-mv /path/to/SimpleBrainMM/raw/FILENAME /path/to/SimpleBrainMM/archive/FILENAME
+mv /path/to/Brain/raw/FILENAME /path/to/Brain/archive/FILENAME
 ```
 
 **Do not consider the task complete until:**

@@ -470,8 +470,8 @@ Knowledge base map:
 - {WIKI_DIR}/people/ — profiles of people (colleagues, partners, contacts)
 - {WIKI_DIR}/people-index.md — index of all people profiles
 - {WIKI_DIR}/refs/ — reference materials (ad campaigns, external links)
-- {WIKI_DIR}/unmute/ — wiki articles specifically about the Unmute project
-- {PROJECTS_DIR}/<name>/ — one folder per active project: unmute, flo, inlab, lesta, sreda, tovarish-major, uc, безтендера, five-year-plan
+- {WIKI_DIR}/<topic>/ — wiki subfolder for a specific project or domain
+- {PROJECTS_DIR}/<name>/ — one folder per active project
   - chat-log.md — meeting notes, standups, group chat extracts (dated sections)
   - README or other .md files — project status, research, docs
 
@@ -608,7 +608,7 @@ def save_session(user_id, messages, is_guest=False):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     content = f"source: {'guest_chat' if is_guest else 'chat_extract'}\ndate: {timestamp}\nuser_id: {user_id}\n\n"
     for m in messages:
-        role = "Guest" if (is_guest and m["role"] == "user") else ("Misha" if m["role"] == "user" else "Claude")
+        role = "Guest" if (is_guest and m["role"] == "user") else ("Owner" if m["role"] == "user" else "Claude")
         content += f"**{role}:** {m['content']}\n\n"
     if is_guest:
         name = get_guest_name(user_id)
@@ -756,7 +756,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system_blocks = [
             {
                 "type": "text",
-                "text": f"""You are a sharp thinking partner. You think like Misha — a creative director, brand strategist and systems thinker from London.
+                "text": f"""You are a sharp thinking partner. You embody the perspective and frameworks of the person whose knowledge base you're drawing from.
 
 Your job is not to answer questions from a database. Your job is to help the guest think better about their ideas — challenge assumptions, find unexpected angles, surface what's really interesting underneath the surface.
 
@@ -767,10 +767,10 @@ Relevant context and frameworks you can draw on:
 {wiki_context}
 
 Rules:
-- Never mention "wiki", "knowledge base", "Misha's notes" or any internal system. The guest doesn't know about any of that.
+- Never mention "wiki", "knowledge base", "owner's notes" or any internal system. The guest doesn't know about any of that.
 - Don't say "I don't have information on X" — either engage with what you know or ask a question that moves the conversation forward.
 - If the guest asks something factual you're uncertain about, engage with the idea first, then note what you'd want to verify.
-- Apply Misha's perspective and frameworks to whatever the guest brings up.
+- Apply the owner's perspective and frameworks to whatever the guest brings up.
 - Brainstorm as an equal — build on their ideas, throw in unexpected angles, yes-and and then challenge. This is a creative conversation between two people thinking together, not Q&A.
 - Always reply in the same language as the guest's message. {HTML_FORMAT_INSTRUCTION}
 {greeting_instruction}"""
@@ -780,24 +780,24 @@ Rules:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are a wise thinking partner for Misha — a creative director and brand strategist from London.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
+                "text": f"You are a wise thinking partner for the owner of this knowledge base.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
                 "type": "text",
-                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how Misha sees the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
+                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how they see the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
             }
         ]
     else:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are Misha's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything he knows:\n\n{wiki_context}",
+                "text": f"You are the owner's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything he knows:\n\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
                 "type": "text",
-                "text": f"USER MODEL — who Misha is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with him:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in his notes connects to what he's saying — bring it in naturally, don't announce it.\n- Match his energy: if he's thinking out loud, think with him. If he wants a quick answer, give it.\n- Always reply in the same language as his message."
+                "text": f"USER MODEL — who the owner is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with him:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in his notes connects to what he's saying — bring it in naturally, don't announce it.\n- Match his energy: if he's thinking out loud, think with him. If he wants a quick answer, give it.\n- Always reply in the same language as his message."
             }
         ]
 
