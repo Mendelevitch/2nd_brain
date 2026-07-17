@@ -4,6 +4,7 @@ import re
 import glob
 import json
 import logging
+import time
 import urllib.request
 import urllib.parse
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -82,6 +83,53 @@ sessions = {}
 session_saved_length = {}
 user_think_mode = {}   # user_id -> bool
 user_browse_mode = {}  # user_id -> bool
+user_local_mode = {}   # user_id -> bool
+
+# ─── OLLAMA (local GPU, optional) ────────────────────────
+# Set OLLAMA_HOST in config.py to enable /local mode
+try:
+    from config import OLLAMA_HOST, OLLAMA_PORT, OLLAMA_MODEL, WINDOWS_MAC  # type: ignore
+except ImportError:
+    OLLAMA_HOST = None
+    OLLAMA_PORT = 11434
+    OLLAMA_MODEL = "gemma4:12b"
+    WINDOWS_MAC = None
+
+def ollama_alive() -> bool:
+    try:
+        with urllib.request.urlopen(
+            f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/tags", timeout=3
+        ) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+def wake_windows():
+    try:
+        import wakeonlan
+        wakeonlan.send_magic_packet(WINDOWS_MAC)
+        logging.info("WoL magic packet sent")
+    except Exception as e:
+        logging.warning(f"WoL failed: {e}")
+
+async def ensure_ollama_awake() -> bool:
+    if ollama_alive():
+        return True
+    wake_windows()
+    import asyncio
+    for _ in range(18):
+        await asyncio.sleep(5)
+        if ollama_alive():
+            return True
+    return False
+
+def ask_ollama(messages: list[dict]) -> str:
+    import urllib.error as _ue
+    url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
+    payload = json.dumps({"model": OLLAMA_MODEL, "messages": messages, "stream": False, "keep_alive": -1}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read().decode())["message"]["content"]
 
 # ─── GROUP STATE ──────────────────────────────────────────
 group_buffers = {}   # chat_id → [{"author", "text", "msg_id", "ts"}]
@@ -274,36 +322,50 @@ def _chunk_file(label, path):
         chunks.append({"label": label, "text": content[:3000]})
     return chunks
 
-def _embed(texts):
+def _embed(texts, retries=5):
     """Embed a list of texts, return numpy array (n, dims)."""
-    resp = oai_client.embeddings.create(model="text-embedding-3-small", input=texts)
-    return np.array([d.embedding for d in resp.data], dtype="float32")
+    for attempt in range(retries):
+        try:
+            resp = oai_client.embeddings.create(model="text-embedding-3-small", input=texts)
+            return np.array([d.embedding for d in resp.data], dtype="float32")
+        except Exception as e:
+            if attempt < retries - 1:
+                wait = 2 ** attempt + 2
+                logging.warning(f"Embedding error (attempt {attempt+1}): {e}. Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
 
 def build_rag_index():
     """Build or refresh the in-memory RAG index."""
     global _rag_index, _rag_mtimes
-    _, entries_dict, _ = load_wiki_index()
-    new_chunks = []
-    new_mtimes = {}
-    for label, path in entries_dict.items():
-        mtime = os.path.getmtime(path)
-        new_mtimes[path] = mtime
-        chunks = _chunk_file(label, path)
-        for c in chunks:
-            new_chunks.append({"label": c["label"], "text": c["text"]})
-    if not new_chunks:
-        return
-    texts = [c["text"] for c in new_chunks]
-    # embed in batches of 100
-    all_embeddings = []
-    for i in range(0, len(texts), 100):
-        all_embeddings.append(_embed(texts[i:i+100]))
-    embeddings = np.concatenate(all_embeddings, axis=0)
-    for i, c in enumerate(new_chunks):
-        c["embedding"] = embeddings[i]
-    _rag_index = new_chunks
-    _rag_mtimes = new_mtimes
-    logging.info(f"RAG index built: {len(_rag_index)} chunks from {len(entries_dict)} files")
+    try:
+        _, entries_dict, _ = load_wiki_index()
+        new_chunks = []
+        new_mtimes = {}
+        for label, path in entries_dict.items():
+            mtime = os.path.getmtime(path)
+            new_mtimes[path] = mtime
+            chunks = _chunk_file(label, path)
+            for c in chunks:
+                if c["text"].strip():
+                    new_chunks.append({"label": c["label"], "text": c["text"]})
+        if not new_chunks:
+            return
+        texts = [c["text"] for c in new_chunks]
+        all_embeddings = []
+        for i in range(0, len(texts), 50):
+            all_embeddings.append(_embed(texts[i:i+50]))
+            if i + 50 < len(texts):
+                time.sleep(3)
+        embeddings = np.concatenate(all_embeddings, axis=0)
+        for i, c in enumerate(new_chunks):
+            c["embedding"] = embeddings[i]
+        _rag_index = new_chunks
+        _rag_mtimes = new_mtimes
+        logging.info(f"RAG index built: {len(_rag_index)} chunks from {len(entries_dict)} files")
+    except Exception as e:
+        logging.error(f"RAG index build failed: {e}. Bot will start without index.")
 
 def rag_search(query, top_k=6):
     """Return top_k relevant chunks for the query."""
@@ -546,7 +608,7 @@ def save_session(user_id, messages, is_guest=False):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     content = f"source: {'guest_chat' if is_guest else 'chat_extract'}\ndate: {timestamp}\nuser_id: {user_id}\n\n"
     for m in messages:
-        role = "Guest" if (is_guest and m["role"] == "user") else ("Owner" if m["role"] == "user" else "Claude")
+        role = "Guest" if (is_guest and m["role"] == "user") else ("Misha" if m["role"] == "user" else "Claude")
         content += f"**{role}:** {m['content']}\n\n"
     if is_guest:
         name = get_guest_name(user_id)
@@ -569,6 +631,9 @@ async def autosave(context):
             is_guest = user_id in get_guest_ids()
             save_session(user_id, messages, is_guest)
 
+async def scheduled_reindex(context):
+    build_rag_index()
+
 # ─── HANDLER ──────────────────────────────────────────────
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -581,7 +646,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_guest = user_id in guest_ids
 
     # Ignore unknown commands
-    if text.startswith("/") and text not in ["/think", "/browse", "/digest", "/status", "/tasks"]:
+    if text.startswith("/") and text not in ["/think", "/browse", "/digest", "/status", "/tasks", "/local"]:
         return
 
     # Digest — latest thinking digest (owner only)
@@ -610,6 +675,18 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(chunk)
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_digest:{user_id}")]])
         await msg.reply_text(chunks[-1], reply_markup=keyboard)
+        return
+
+    # Toggle local mode (owner only)
+    if text == "/local" and not is_guest:
+        if not OLLAMA_HOST:
+            await msg.reply_text("⚠️ Ollama не настроен. Добавь OLLAMA_HOST в config.py.")
+            return
+        user_local_mode[user_id] = not user_local_mode.get(user_id, False)
+        local_state = "ON" if user_local_mode[user_id] else "OFF"
+        think_state = "ON" if user_think_mode.get(user_id, False) else "OFF"
+        browse_state = "ON" if user_browse_mode.get(user_id, False) else "OFF"
+        await msg.reply_text(f"🖥 local: {local_state}  🧠 think: {think_state}  🌐 browse: {browse_state}")
         return
 
     # Toggle think mode (owner only)
@@ -658,6 +735,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     think_mode = user_think_mode.get(user_id, False) and not is_guest
     browse_mode = user_browse_mode.get(user_id, False) and not is_guest
+    local_mode = user_local_mode.get(user_id, False) and not is_guest
 
     web_context = ""
     if browse_mode:
@@ -678,7 +756,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system_blocks = [
             {
                 "type": "text",
-                "text": f"""You are a sharp thinking partner. You think like the owner — a creative director, brand strategist and systems thinker.
+                "text": f"""You are a sharp thinking partner. You think like Misha — a creative director, brand strategist and systems thinker from London.
 
 Your job is not to answer questions from a database. Your job is to help the guest think better about their ideas — challenge assumptions, find unexpected angles, surface what's really interesting underneath the surface.
 
@@ -702,7 +780,7 @@ Rules:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are a wise thinking partner for the owner — a creative director and brand strategist.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
+                "text": f"You are a wise thinking partner for Misha — a creative director and brand strategist from London.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
@@ -714,7 +792,7 @@ Rules:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are the owner's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything he knows:\n\n{wiki_context}",
+                "text": f"You are Misha's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything he knows:\n\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
@@ -723,19 +801,31 @@ Rules:
             }
         ]
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=1500,
-        system=system_blocks,
-        messages=sessions[user_id]
-    )
+    if local_mode:
+        if not await ensure_ollama_awake():
+            await thinking_msg.edit_text("🖥 Большой комп выключен. Включи его или отключи /local.")
+            return
+        system_text = "\n\n".join(b["text"] for b in system_blocks if b.get("type") == "text")
+        ollama_messages = [{"role": "system", "content": system_text}] + sessions[user_id]
+        try:
+            reply = ask_ollama(ollama_messages)
+        except Exception as e:
+            await thinking_msg.edit_text(f"🖥 Ollama не отвечает: {e}")
+            return
+        reply = md_to_tg_html(reply)
+    else:
+        response = client.messages.create(
+            model=model,
+            max_tokens=1500,
+            system=system_blocks,
+            messages=sessions[user_id]
+        )
+        reply = response.content[0].text
+        u = response.usage
+        logging.info(f"tokens: input={u.input_tokens} cache_read={getattr(u, 'cache_read_input_tokens', 0)} cache_write={getattr(u, 'cache_creation_input_tokens', 0)} output={u.output_tokens}")
 
-    reply = response.content[0].text
     sessions[user_id].append({"role": "assistant", "content": reply})
     await send_html(thinking_msg, reply)
-    # Log cache usage for cost monitoring
-    u = response.usage
-    logging.info(f"tokens: input={u.input_tokens} cache_read={getattr(u, 'cache_read_input_tokens', 0)} cache_write={getattr(u, 'cache_creation_input_tokens', 0)} output={u.output_tokens}")
 
 # ─── GROUP CHAT ───────────────────────────────────────────
 async def handle_group_mention(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
@@ -992,4 +1082,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.TEXT | filters.COMMAND), handle))
     app.job_queue.run_repeating(autosave, interval=1800, first=1800)
     app.job_queue.run_repeating(scan_group_chat, interval=3600, first=60)
+    app.job_queue.run_repeating(scheduled_reindex, interval=43200, first=3600)
     app.run_polling(allowed_updates=Update.ALL_TYPES)

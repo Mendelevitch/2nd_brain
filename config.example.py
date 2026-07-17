@@ -26,3 +26,12 @@ BRAIN_DIR = "/brain"
 # If running directly on a Pi or Mac, use the actual path:
 # BRAIN_DIR = "/path/to/your/brain"
 
+# ── Ollama / local GPU (optional) ─────────────────────────
+# Set these to enable /local mode in the chat bot —
+# routes responses to a local Ollama instance instead of Claude.
+# Leave unset (or delete these lines) if you don't have a local GPU.
+# OLLAMA_HOST  = "192.168.1.100"   # IP of the machine running Ollama
+# OLLAMA_PORT  = 11434
+# OLLAMA_MODEL = "gemma4:12b"
+# WINDOWS_MAC  = ""                 # MAC address for Wake-on-LAN (optional)
+
