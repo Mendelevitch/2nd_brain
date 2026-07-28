@@ -1,4 +1,82 @@
-# Setting up a local GPU (Windows)
+# Setting up on Windows
+
+Windows replaces the Mac in this setup. It handles three things:
+1. **Cowork** — runs the automated wiki-processing routines (daily translate, weekly digest, etc.)
+2. **Syncthing** — keeps your Brain folder in sync with the Pi
+3. **Ollama** (optional, if you have a GPU) — runs local AI models for `/local` mode in the chat bot
+
+---
+
+## Part 1: Brain folder + Cowork
+
+### Create the Brain folder structure
+
+Open PowerShell and run:
+
+```powershell
+$brain = "$env:USERPROFILE\Brain"
+@("raw","wiki","archive","insights","user","guest_chats","chats","projects","prompts") | ForEach-Object {
+    New-Item -ItemType Directory -Force -Path "$brain\$_"
+}
+Write-Host "Brain folder created at $brain"
+```
+
+### Copy Cowork prompts
+
+From the cloned repo:
+
+```powershell
+$repo = "C:\path\to\2nd-brain"   # wherever you cloned the repo
+$brain = "$env:USERPROFILE\Brain"
+Copy-Item "$repo\prompts\*" "$brain\prompts\" -Recurse -Force
+Copy-Item "$repo\templates\*" "$brain\templates\" -Recurse -Force
+```
+
+### Install Cowork
+
+Download and install [Cowork](https://cowork.ai) for Windows.
+
+Open Cowork, point it at your Brain folder (`~/Brain`), and run `templates/setup-cowork-routines.md` once — this creates all the scheduled routines (daily translate, weekly digest, planning).
+
+### Create your user model
+
+Run `templates/onboarding-cowork.md` in Cowork — it interviews you and creates `user/user-model.md` and seeds your wiki.
+
+---
+
+## Part 2: Syncthing (sync Brain with Pi)
+
+Syncthing keeps your Brain folder on Windows in sync with the Pi.
+
+### Install Syncthing on Windows
+
+Download from [syncthing.net](https://syncthing.net) — use the Windows installer. It runs as a tray app.
+
+Open the web UI at `http://localhost:8384`.
+
+### Add the Pi as a remote device
+
+1. On the Pi, get the Device ID: `syncthing --device-id`
+2. In Windows Syncthing UI: **Add Remote Device** → paste the Pi's Device ID
+3. On the Pi's Syncthing UI, accept the connection from Windows
+
+### Set up shared folders
+
+| Folder | Windows path | Pi path | Direction |
+|--------|-------------|---------|-----------|
+| brain-raw | `~/Brain/raw` | `/brain/raw` | Pi → Windows |
+| brain-wiki | `~/Brain/wiki` | `/brain/wiki` | Windows → Pi |
+| brain-insights | `~/Brain/insights` | `/brain/insights` | Windows → Pi |
+| brain-user | `~/Brain/user` | `/brain/user` | Windows → Pi |
+| brain-guest-chats | `~/Brain/guest_chats` | `/brain/guest_chats` | Pi → Windows |
+
+In Syncthing, "Send Only" = that side is the source; "Receive Only" = that side receives.
+
+See [docs/setup-syncthing.md](setup-syncthing.md) for the full Syncthing guide.
+
+---
+
+## Part 3: Local GPU (optional)
 
 If you have a Windows machine with a decent GPU, you can route chat bot responses to a local model via `/local` mode. This keeps conversations private and avoids API costs for heavy usage.
 

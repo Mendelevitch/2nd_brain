@@ -46,9 +46,12 @@ You → Telegram → SaveBot → /raw → Cowork → /wiki → ChatBot → You
 - Anthropic API key (for the bots)
 - OpenAI API key (optional — for voice transcription via Whisper)
 
-**For automatic wiki processing:** [Cowork](https://cowork.ai) on a Mac/PC, synced via Syncthing. Without it, the bots still work — capture and chat — but wiki won't update automatically.
+**For automatic wiki processing:** [Cowork](https://cowork.ai) on a Mac or Windows PC, synced via Syncthing. Without it, the bots still work — capture and chat — but wiki won't update automatically.
 
-**For local GPU mode (optional):** A Windows or Linux machine with a GPU running [Ollama](https://ollama.com). See [docs/setup-windows.md](docs/setup-windows.md).
+**Mac setup:** `./setup-mac.sh` creates `~/Brain/` and copies all prompts.  
+**Windows setup:** see [docs/setup-windows.md](docs/setup-windows.md) — covers Brain folder, Cowork, Syncthing, and optional Ollama GPU.
+
+**For local GPU mode (optional):** A machine with a GPU running [Ollama](https://ollama.com). See [docs/setup-windows.md](docs/setup-windows.md).
 
 ---
 
