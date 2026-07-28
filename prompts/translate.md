@@ -4,6 +4,8 @@ Process everything in `/raw` into atomic wiki entries in `/wiki`. This happens i
 
 **Before Pass 1, also pull new meetings from Granola** (see "Granola" under Source types) — this is the primary meeting-notes source. **As a fallback, also scan the Notion TLDV page** (see "Notion TLDV (fallback)" under Source types) for anything still landing there. Treat both intakes exactly like raw files. The rest of the process — analysis, atomization, wiki merge — is identical; only the intake and the "after processing" step differ per source.
 
+**Also, before Pass 1, check the "Re-ingest queue" section below** if it exists — a bounded list of already-archived files that were expanded after their first pass and need re-mining.
+
 ---
 
 ## Pass 1 — Analysis
@@ -55,7 +57,7 @@ If the file contains a `Meeting ID:` field (Granola export), construct the sourc
 - **Concrete intelligence** — names, contacts, prices, market data, competitive intel, offers made. Log it verbatim.
 - **Commitments and next steps** — what was decided, proposed, or offered. If someone said "I'll introduce you" or "call me next week", log it.
 - **Quotes** — phrases that carry signal: precise, memorable, or revealing. Preserve in the speaker's own words, with attribution.
-- **Personal reflections** — identity, values, self-assessments, lessons drawn. the owner saying something about himself at 40 is as wiki-worthy as a business framework.
+- **Personal reflections** — identity, values, self-assessments, lessons drawn. the owner saying something about themselves at 40 is as wiki-worthy as a business framework.
 - **Tensions and open questions** — things raised but not resolved. Active uncertainties are valuable to track.
 - **Emotional signals** — what provoked excitement, doubt, frustration. These contextualize everything else.
 
@@ -68,7 +70,7 @@ A transcript of a Telegram group chat episode (bounded by a 4-hour silence gap).
 
 Process as follows:
 1. Read the full transcript and identify distinct topic threads — a single episode often contains several unrelated conversations.
-2. For each thread, determine if it relates to a project in `/projects/`. Check by folder name and by context.
+2. For each thread, determine if it relates to a project in `/projects/`. Check by folder name and by context (a chat named "unmute" will discuss unmute work, but also inlab, flo, etc.).
 3. For each project touched: append a dated section to `/projects/{name}/chat-log.md` with extracted todos, decisions, and ideas. Format: `## YYYY-MM-DD — {chat title}`, then bullet points with author attribution.
 4. For threads not linked to any specific project: extract ideas/decisions to wiki as usual (`source: conversation` rules apply).
 5. Do NOT create a single monolithic entry — split by topic/project thread.
@@ -100,7 +102,7 @@ Kept for continuity now that Granola (above) is the primary meeting source. This
 
 A Notion page where tl;dv auto-dumps call transcripts (and occasionally notes/links) as child pages. The page is the inbox; its child pages are the "files." Treat each new child page exactly like a raw file.
 
-Page: **TLDV** — find the page ID in your Notion workspace and set it here.
+Page: **TLDV** — ID `3893fedb44a080bbaca4dc57246eac56` (https://www.notion.so/mendelevitch/TLDV-3893fedb44a080bbaca4dc57246eac56)
 
 **Dedup via title marker.** A child page is considered processed once its title starts with `✅ `. That marker (set by us after processing) is the only record — there is no separate ledger.
 
@@ -190,7 +192,7 @@ After Pass 2 wiki updates are done, update people profiles in `wiki/people/`.
 
 ## Текущее состояние (YYYY-MM)
 
-## Динамика отношений с владельцем
+## Динамика отношений с Мишей
 
 ## Идейные треды
 
@@ -215,3 +217,31 @@ mv /path/to/Brain/raw/FILENAME /path/to/Brain/archive/FILENAME
 3. Every wiki entry that file fed has a `→ [filename](../archive/filename.md)` link at the bottom
 
 This step is not optional. Wiki edits without archiving = task is unfinished. The user will know — `/raw` shows what was missed.
+
+---
+
+## ⭐ CURRENT CONTEXT — update after every run
+
+After archiving, update the `## Current Context` section at the **top** of `user/user-model.md`.
+
+**This is the most important maintenance step.** `user-model.md` is loaded on every ChatBot conversation. If it's stale, the bot hallucinates about what's current — even if the wiki is perfectly accurate.
+
+**Rules:**
+- Update `**Last updated:**` to today's date.
+- Update `**Employment:**` if the job changed.
+- Update `**Professional focus:**` to reflect what's consuming 100% of energy right now — based on what you just processed from `/raw`.
+- Update `**Agency/project status:**` if any projects opened or closed.
+- If nothing has changed, just update the date.
+- Keep it concise — 4–6 bullet points max. This is not a diary; it's a grounding anchor for the bot.
+
+**Format:**
+```markdown
+## Current Context
+
+**Last updated: YYYY-MM-DD**
+
+- **Employment:** [role] at [company]. Started [date]. [Location].
+- **Professional focus:** [what's active and why it matters right now].
+- **[Project/agency] status:** [what's closed, what's paused, what's archived].
+- **Key reference:** `wiki/[file].md`
+```

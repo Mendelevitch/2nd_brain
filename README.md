@@ -24,15 +24,17 @@ You → Telegram → SaveBot → /raw → Cowork → /wiki → ChatBot → You
 - Two-pass wiki search (index scan → full file load) across `/wiki` and `/projects`
 - Group chat support — @mention the bot in a group; it remembers context across the conversation
 - `/think` — deeper mode using Claude Sonnet, acts as a sparring partner
-- `/browse` — adds DuckDuckGo results to context
+- `/browse` — adds live web search to context (DuckDuckGo); auto-triggers on keywords like "search for", "latest news"
+- `/local` — routes responses to a local Ollama model on your GPU machine (optional); includes agentic web search via tool calling
 - Guest mode — friends get their own conversation channel with your bot
 - `??` — saves and closes the session
 - `дайджест` / `digest` — sends the latest weekly digest
 
-**Cowork prompts** (run weekly on your Mac):
-- `translate.md` — processes `/raw` into wiki entries
-- `wiki-curate.md` — strengthens links between wiki pages
-- `weekly-planning.md` — reviews todos, suggests next steps
+**Cowork prompts** run the background intelligence — process raw notes into wiki, generate weekly digests, maintain `user-model.md` so the bot always knows what's current:
+- `translate.md` — daily: processes `/raw` into wiki entries, updates `Current Context` in user model
+- `wiki-curate.md` — weekly: strengthens links between wiki pages
+- `weekly-planning.md` — weekly: reviews todos, suggests next steps
+- `weekly-thinking-digest.md` — weekly: surfaces patterns and intersections from the week
 
 ---
 
@@ -45,6 +47,8 @@ You → Telegram → SaveBot → /raw → Cowork → /wiki → ChatBot → You
 - OpenAI API key (optional — for voice transcription via Whisper)
 
 **For automatic wiki processing:** [Cowork](https://cowork.ai) on a Mac/PC, synced via Syncthing. Without it, the bots still work — capture and chat — but wiki won't update automatically.
+
+**For local GPU mode (optional):** A Windows or Linux machine with a GPU running [Ollama](https://ollama.com). See [docs/setup-windows.md](docs/setup-windows.md).
 
 ---
 
@@ -251,20 +255,29 @@ To create all routines at once, run `templates/setup-cowork-routines.md` in Cowo
 ```
 2nd-brain/
 ├── save_bot.py            ← capture bot
-├── chat_bot.py            ← chat bot (private + group chats)
+├── chat_bot.py            ← chat bot (private + group chats + /local GPU)
 ├── config.example.py      ← configuration template
+├── install.sh             ← one-command setup
+├── setup-mac.sh           ← Mac setup (Brain folder + Cowork prompts)
 ├── watch_bots.sh          ← auto-restarts bots on file change
 ├── requirements.txt
-├── services/              ← systemd service files
+├── services/              ← systemd service files (Pi)
 ├── prompts/               ← Cowork process prompts
+│   ├── translate.md            ← daily: raw → wiki + update Current Context
+│   ├── wiki-curate.md          ← weekly: strengthen wiki links
+│   ├── weekly-planning.md      ← weekly: review todos
+│   ├── weekly-thinking-digest.md ← weekly: surface patterns
+│   └── research.md             ← weekly: fill wiki gaps
 ├── templates/
 │   ├── build-user-model.md     ← start here: ChatGPT / Claude / fresh
 │   ├── onboarding-cowork.md    ← Cowork setup prompt (seeds wiki)
+│   ├── setup-cowork-routines.md ← run once to create all Cowork schedules
 │   ├── user-model.md           ← blank user model template
 │   └── guests.example.json
 └── docs/
     ├── setup-syncthing.md
-    └── setup-notion.md
+    ├── setup-notion.md
+    └── setup-windows.md        ← Ollama on Windows + Wake-on-LAN
 ```
 
 ---
@@ -279,6 +292,9 @@ To create all routines at once, run `templates/setup-cowork-routines.md` in Cowo
 - ~~Cowork routines setup guide~~ — `templates/setup-cowork-routines.md` — run once in Cowork to create all scheduled routines
 - ~~Privacy Mode docs~~ — added to README (Group chats section)
 - ~~Personalisation removed~~ — all "owner name" references stripped from public repo
+- ~~Local GPU mode~~ — `/local` toggle in chat bot routes to Ollama; agentic web search via tool calling; Wake-on-LAN support
+- ~~Windows GPU setup~~ — `docs/setup-windows.md` covers Ollama install, firewall, WoL
+- ~~Current Context in user model~~ — Cowork updates `user-model.md` daily so bot always knows what's active
 
 ---
 

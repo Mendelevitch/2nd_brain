@@ -86,7 +86,7 @@ user_browse_mode = {}  # user_id -> bool
 user_local_mode = {}   # user_id -> bool
 
 # ─── OLLAMA (local GPU, optional) ────────────────────────
-# Set OLLAMA_HOST in config.py to enable /local mode
+# Set these in config.py to enable /local mode in the chat bot.
 try:
     from config import OLLAMA_HOST, OLLAMA_PORT, OLLAMA_MODEL, WINDOWS_MAC  # type: ignore
 except ImportError:
@@ -124,12 +124,59 @@ async def ensure_ollama_awake() -> bool:
     return False
 
 def ask_ollama(messages: list[dict]) -> str:
-    import urllib.error as _ue
     url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
     payload = json.dumps({"model": OLLAMA_MODEL, "messages": messages, "stream": False, "keep_alive": -1}).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.loads(r.read().decode())["message"]["content"]
+
+def ask_ollama_browse(messages: list[dict], max_steps: int = 6) -> str:
+    """Agentic browse loop using Ollama tool calling."""
+    tools = [
+        {"type": "function", "function": {
+            "name": "search",
+            "description": "Search the web for current information. Use multiple focused queries for best results.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "Search query"}
+            }, "required": ["query"]}
+        }},
+        {"type": "function", "function": {
+            "name": "fetch_page",
+            "description": "Read the full content of a webpage by URL.",
+            "parameters": {"type": "object", "properties": {
+                "url": {"type": "string", "description": "URL to fetch"}
+            }, "required": ["url"]}
+        }}
+    ]
+    conv = list(messages)
+    url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
+    for step in range(max_steps):
+        payload = json.dumps({
+            "model": OLLAMA_MODEL, "messages": conv,
+            "tools": tools, "stream": False, "keep_alive": -1
+        }).encode()
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            resp = json.loads(r.read().decode())
+        msg = resp["message"]
+        conv.append(msg)
+        if not msg.get("tool_calls"):
+            return msg.get("content", "")
+        for tc in msg["tool_calls"]:
+            fn = tc["function"]["name"]
+            args = tc["function"]["arguments"]
+            if isinstance(args, str):
+                args = json.loads(args)
+            if fn == "search":
+                results = _ddg_search(args.get("query", ""))
+                tool_result = "\n".join(f"{r['url']}: {r['snippet']}" for r in results[:5]) or "No results"
+            elif fn == "fetch_page":
+                tool_result = _fetch_page(args.get("url", "")) or "Could not fetch page"
+            else:
+                tool_result = "Unknown tool"
+            logging.info(f"ollama tool: {fn}({args}) → {len(tool_result)} chars")
+            conv.append({"role": "tool", "content": tool_result})
+    return conv[-1].get("content", "")
 
 # ─── GROUP STATE ──────────────────────────────────────────
 group_buffers = {}   # chat_id → [{"author", "text", "msg_id", "ts"}]
@@ -138,6 +185,7 @@ group_members = {}   # chat_id → set of known member names
 group_sessions = {}   # chat_id → [{"role", "content"}] — conversation with bot
 group_think = {}      # chat_id → bool
 group_browse = {}     # chat_id → bool
+group_local = {}      # chat_id → bool
 
 def chat_folder_name(title):
     return re.sub(r'[^\w-]', '-', title.strip().lower()).strip('-') or "group"
@@ -246,19 +294,38 @@ def load_wiki_index():
             return f"{date_range} {headers[0]} | ... | {headers[-1]}"
         return content[:200].replace("\n", " ")
 
+    import datetime as _dt
+    now = _dt.datetime.now()
+
+    def age_tag(path):
+        try:
+            mtime = _dt.datetime.fromtimestamp(os.path.getmtime(path))
+            days = (now - mtime).days
+            if days <= 3:
+                return "🟢 updated <3d ago"
+            elif days <= 14:
+                return f"🟡 updated {days}d ago"
+            else:
+                return f"⚪ last updated {days}d ago"
+        except Exception:
+            return ""
+
     subdir_lines = []
     project_lines = []
     for label, path in entries:
+        tag = age_tag(path)
+        snippet = make_snippet(path)
+        line = f"**{label}** [{tag}] — {snippet}"
         if label.startswith("projects/"):
-            project_lines.append(f"**{label}** — {make_snippet(path)}")
+            project_lines.append(line)
         elif "/" in label:  # wiki subdirectory files not covered by _index.md
-            subdir_lines.append(f"**{label}** — {make_snippet(path)}")
+            subdir_lines.append(line)
 
     index_text = wiki_index
     if subdir_lines:
         index_text += "\n\n### Wiki subfolders\n" + "\n".join(subdir_lines)
     if project_lines:
-        index_text += "\n\n### Active projects\n" + "\n".join(project_lines)
+        index_text += "\n\n### Project files (sorted by recency)\n" + "\n".join(project_lines)
 
     return index_text, entries_dict, all_labels
 
@@ -271,10 +338,17 @@ def select_relevant_files(query, index_text, all_labels):
         max_tokens=200,
         system="""You are a search assistant. Given a user query and a file index, return ONLY the filenames (comma-separated) of files most likely to contain what the user is looking for. Return at most 5 files. If none are relevant, return NONE.
 
+CRITICAL RULES:
+- The index has a "⭐ CURRENT FOCUS" section — always check this first for current project context.
+- Project files tagged "🟢 updated <3d ago" or "🟡 updated Xd ago" are recent and active. Prefer them.
+- Project files tagged "⚪ last updated Xd ago" with large X (>30 days) are likely archived/completed — avoid unless directly asked.
+- Files marked "(archived)" or "(completed)" in the description are OLD — never pick them for current status/signals.
+- When the query asks about "signals", "what's going on", "current state", "recent updates" — ONLY pick files updated recently or from the CURRENT FOCUS section.
+
 Think about intent, not just keywords. Examples:
 - "what did we discuss on the standup" → look for chat logs, meeting notes, project status files
 - "запись звонка / what was said on the call" → look for transcripts, call summaries, chat logs
-- "статус проекта" → look for status files, project READMEs, active project notes
+- "статус проекта / current signals / сигналы" → CURRENT FOCUS file first, then recently updated files
 - "кто такой X" → look for people files, mentions in project notes
 
 Match files by what they likely *contain*, not just whether the query words appear in the filename.""",
@@ -470,8 +544,8 @@ Knowledge base map:
 - {WIKI_DIR}/people/ — profiles of people (colleagues, partners, contacts)
 - {WIKI_DIR}/people-index.md — index of all people profiles
 - {WIKI_DIR}/refs/ — reference materials (ad campaigns, external links)
-- {WIKI_DIR}/<topic>/ — wiki subfolder for a specific project or domain
-- {PROJECTS_DIR}/<name>/ — one folder per active project
+- {WIKI_DIR}/unmute/ — wiki articles specifically about the Unmute project
+- {PROJECTS_DIR}/<name>/ — one folder per active project (your own names)
   - chat-log.md — meeting notes, standups, group chat extracts (dated sections)
   - README or other .md files — project status, research, docs
 
@@ -527,24 +601,68 @@ Be efficient — 2-4 tool calls is usually enough. Never read the whole wiki. Wh
 
     return ""
 
-def web_search(query, max_results=3):
-    """Search DuckDuckGo and return short snippets."""
+def _ddg_search(query: str) -> list:
+    """Search DuckDuckGo via ddgs library, return list of {url, snippet}."""
     try:
-        params = urllib.parse.urlencode({"q": query, "format": "json", "no_html": 1, "skip_disambig": 1})
-        url = f"https://api.duckduckgo.com/?{params}"
-        req = urllib.request.Request(url, headers={"User-Agent": "MindBot/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = json.loads(r.read().decode())
-        results = []
-        if data.get("AbstractText"):
-            results.append(data["AbstractText"])
-        for item in data.get("RelatedTopics", [])[:max_results]:
-            if isinstance(item, dict) and item.get("Text"):
-                results.append(item["Text"])
-        return "\n\n".join(results[:max_results]) if results else ""
+        from ddgs import DDGS
+        raw = DDGS().text(query, max_results=5)
+        results = [{"url": r["href"], "snippet": r.get("body", "")} for r in (raw or [])]
+        logging.info(f"DDG search '{query}': {len(results)} results")
+        return results
     except Exception as e:
-        logging.warning(f"web_search failed: {e}")
+        logging.warning(f"DDG search failed: {e}")
+        return []
+
+def _fetch_page(url: str, max_chars: int = 2500) -> str:
+    """Fetch a URL and return extracted text."""
+    try:
+        from newspaper import Article
+        a = Article(url)
+        a.download()
+        a.parse()
+        if a.text and len(a.text) > 100:
+            return a.text[:max_chars]
+    except Exception:
+        pass
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            html = r.read().decode("utf-8", errors="ignore")[:80000]
+        text = re.sub(r"<[^>]+>", " ", html)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:max_chars]
+    except Exception:
         return ""
+
+async def web_search(question: str) -> str:
+    """Multi-query search: generate queries → search DDG → fetch pages."""
+    import asyncio
+    try:
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=120,
+            messages=[{"role": "user", "content": f"Write 2-3 distinct search queries to research this. Return ONLY the queries, one per line, no numbering:\n\n{question}"}]
+        )
+        queries = [q.strip() for q in resp.content[0].text.strip().split("\n") if q.strip()][:3]
+    except Exception:
+        queries = [question]
+    logging.info(f"browse queries: {queries}")
+    all_results, seen = [], set()
+    for q in queries:
+        for r in _ddg_search(q):
+            if r["url"] not in seen:
+                seen.add(r["url"])
+                all_results.append(r)
+    if not all_results:
+        return ""
+    top = all_results[:4]
+    texts = await asyncio.gather(*[asyncio.to_thread(_fetch_page, r["url"]) for r in top])
+    parts = []
+    for r, text in zip(top, texts):
+        content = text or r["snippet"]
+        if content:
+            parts.append(f"Source: {r['url']}\n{content}")
+    return "\n\n---\n\n".join(parts)
 
 async def send_voice_digest(query, text):
     """Generate TTS and send as voice message(s), max 4096 chars per chunk."""
@@ -677,32 +795,31 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(chunks[-1], reply_markup=keyboard)
         return
 
+    def mode_status(uid):
+        t = "ON" if user_think_mode.get(uid) else "OFF"
+        b = "ON" if user_browse_mode.get(uid) else "OFF"
+        l = "ON" if user_local_mode.get(uid) else "OFF"
+        return f"🧠 think: {t}  🌐 browse: {b}  🖥 local: {l}"
+
     # Toggle local mode (owner only)
     if text == "/local" and not is_guest:
         if not OLLAMA_HOST:
             await msg.reply_text("⚠️ Ollama не настроен. Добавь OLLAMA_HOST в config.py.")
             return
         user_local_mode[user_id] = not user_local_mode.get(user_id, False)
-        local_state = "ON" if user_local_mode[user_id] else "OFF"
-        think_state = "ON" if user_think_mode.get(user_id, False) else "OFF"
-        browse_state = "ON" if user_browse_mode.get(user_id, False) else "OFF"
-        await msg.reply_text(f"🖥 local: {local_state}  🧠 think: {think_state}  🌐 browse: {browse_state}")
+        await msg.reply_text(mode_status(user_id))
         return
 
     # Toggle think mode (owner only)
     if text == "/think" and not is_guest:
         user_think_mode[user_id] = not user_think_mode.get(user_id, False)
-        state = "ON" if user_think_mode[user_id] else "OFF"
-        browse_state = "ON" if user_browse_mode.get(user_id, False) else "OFF"
-        await msg.reply_text(f"🧠 think: {state}  🌐 browse: {browse_state}")
+        await msg.reply_text(mode_status(user_id))
         return
 
     # Toggle browse mode (owner only)
     if text == "/browse" and not is_guest:
         user_browse_mode[user_id] = not user_browse_mode.get(user_id, False)
-        state = "ON" if user_browse_mode[user_id] else "OFF"
-        think_state = "ON" if user_think_mode.get(user_id, False) else "OFF"
-        await msg.reply_text(f"🧠 think: {think_state}  🌐 browse: {state}")
+        await msg.reply_text(mode_status(user_id))
         return
 
     # End session
@@ -734,12 +851,22 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wiki_context = load_wiki(query=text)
 
     think_mode = user_think_mode.get(user_id, False) and not is_guest
-    browse_mode = user_browse_mode.get(user_id, False) and not is_guest
     local_mode = user_local_mode.get(user_id, False) and not is_guest
+
+    BROWSE_TRIGGERS = [
+        "поищи", "погугли", "найди в сети", "найди в интернете",
+        "что сейчас", "что происходит", "последние новости", "свежие новости",
+        "актуальные новости", "новости про", "новости о",
+        "search for", "look up", "find online", "latest news", "current news",
+        "what's happening", "what is happening",
+    ]
+    text_lower = text.lower()
+    auto_browse = any(t in text_lower for t in BROWSE_TRIGGERS)
+    browse_mode = (user_browse_mode.get(user_id, False) or auto_browse) and not is_guest
 
     web_context = ""
     if browse_mode:
-        web_context = web_search(text)
+        web_context = await web_search(text)
 
     if web_context:
         web_extra = f"\n\nWEB SEARCH RESULTS:\n{web_context}"
@@ -756,7 +883,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system_blocks = [
             {
                 "type": "text",
-                "text": f"""You are a sharp thinking partner. You embody the perspective and frameworks of the person whose knowledge base you're drawing from.
+                "text": f"""You are a sharp thinking partner. You think like the owner — a creative director, brand strategist and systems thinker.
 
 Your job is not to answer questions from a database. Your job is to help the guest think better about their ideas — challenge assumptions, find unexpected angles, surface what's really interesting underneath the surface.
 
@@ -767,7 +894,7 @@ Relevant context and frameworks you can draw on:
 {wiki_context}
 
 Rules:
-- Never mention "wiki", "knowledge base", "owner's notes" or any internal system. The guest doesn't know about any of that.
+- Never mention "wiki", "knowledge base", "the owner's notes" or any internal system. The guest doesn't know about any of that.
 - Don't say "I don't have information on X" — either engage with what you know or ask a question that moves the conversation forward.
 - If the guest asks something factual you're uncertain about, engage with the idea first, then note what you'd want to verify.
 - Apply the owner's perspective and frameworks to whatever the guest brings up.
@@ -780,12 +907,12 @@ Rules:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are a wise thinking partner for the owner of this knowledge base.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
+                "text": f"You are a wise thinking partner for the owner — a creative director and brand strategist.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
                 "type": "text",
-                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how they see the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
+                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how the owner sees the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
             }
         ]
     else:
@@ -797,7 +924,7 @@ Rules:
             },
             {
                 "type": "text",
-                "text": f"USER MODEL — who the owner is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with him:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in his notes connects to what he's saying — bring it in naturally, don't announce it.\n- Match his energy: if he's thinking out loud, think with him. If he wants a quick answer, give it.\n- Always reply in the same language as his message."
+                "text": f"USER MODEL — who the owner is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with him:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in the notes connects to what the owner is saying — bring it in naturally, don't announce it.\n- Match his energy: if he's thinking out loud, think with him. If he wants a quick answer, give it.\n- Always reply in the same language as his message."
             }
         ]
 
@@ -806,9 +933,14 @@ Rules:
             await thinking_msg.edit_text("🖥 Большой комп выключен. Включи его или отключи /local.")
             return
         system_text = "\n\n".join(b["text"] for b in system_blocks if b.get("type") == "text")
+        system_text = system_text.replace(
+            "WEB SEARCH: returned no results — do not claim to be browsing.", ""
+        )
+        system_text += "\n\nYou have access to search and fetch_page tools. Use them whenever the user asks about news, current events, or anything that may have changed recently. Search proactively — do not say you cannot access the internet."
         ollama_messages = [{"role": "system", "content": system_text}] + sessions[user_id]
         try:
-            reply = ask_ollama(ollama_messages)
+            import asyncio
+            reply = await asyncio.to_thread(ask_ollama_browse, ollama_messages)
         except Exception as e:
             await thinking_msg.edit_text(f"🖥 Ollama не отвечает: {e}")
             return
@@ -848,11 +980,18 @@ async def handle_group_mention(update: Update, context: ContextTypes.DEFAULT_TYP
     # Handle toggles
     if query.strip() == "/think":
         group_think[chat_id] = not group_think.get(chat_id, False)
-        await thinking.edit_text(f"🧠 think: {'ON' if group_think[chat_id] else 'OFF'}  🌐 browse: {'ON' if group_browse.get(chat_id) else 'OFF'}")
+        await thinking.edit_text(f"🧠 think: {'ON' if group_think[chat_id] else 'OFF'}  🌐 browse: {'ON' if group_browse.get(chat_id) else 'OFF'}  🖥 local: {'ON' if group_local.get(chat_id) else 'OFF'}")
         return
     if query.strip() == "/browse":
         group_browse[chat_id] = not group_browse.get(chat_id, False)
-        await thinking.edit_text(f"🧠 think: {'ON' if group_think.get(chat_id) else 'OFF'}  🌐 browse: {'ON' if group_browse[chat_id] else 'OFF'}")
+        await thinking.edit_text(f"🧠 think: {'ON' if group_think.get(chat_id) else 'OFF'}  🌐 browse: {'ON' if group_browse[chat_id] else 'OFF'}  🖥 local: {'ON' if group_local.get(chat_id) else 'OFF'}")
+        return
+    if query.strip() == "/local":
+        if not OLLAMA_HOST:
+            await thinking.edit_text("⚠️ Ollama не настроен.")
+            return
+        group_local[chat_id] = not group_local.get(chat_id, False)
+        await thinking.edit_text(f"🧠 think: {'ON' if group_think.get(chat_id) else 'OFF'}  🌐 browse: {'ON' if group_browse.get(chat_id) else 'OFF'}  🖥 local: {'ON' if group_local[chat_id] else 'OFF'}")
         return
 
     # Detect language from query (which has the @mention stripped)
@@ -863,12 +1002,15 @@ async def handle_group_mention(update: Update, context: ContextTypes.DEFAULT_TYP
     ) else "Reply in the same language as the user's message."
     lang_instruction += f" {HTML_FORMAT_INSTRUCTION}"
 
+    query_lower = (query or "").lower()
+    auto_browse_group = any(t in query_lower for t in BROWSE_TRIGGERS)
+    do_browse = group_browse.get(chat_id) or auto_browse_group
     web_context = ""
-    if group_browse.get(chat_id):
-        web_context = web_search(query or chat_history[:100])
+    if do_browse:
+        web_context = await web_search(query or chat_history[:100])
     if web_context:
         web_section = f"\n\nWEB SEARCH RESULTS:\n{web_context}"
-    elif group_browse.get(chat_id):
+    elif do_browse:
         web_section = "\n\nWEB SEARCH: returned no results — do not claim to be browsing."
     else:
         web_section = ""
@@ -900,14 +1042,26 @@ Relevant knowledge:
     if len(group_sessions[chat_id]) > 40:
         group_sessions[chat_id] = group_sessions[chat_id][-40:]
 
-    model = "claude-sonnet-4-6" if group_think.get(chat_id) else "claude-haiku-4-5-20251001"
-    response = client.messages.create(
-        model=model,
-        max_tokens=800,
-        system=system,
-        messages=group_sessions[chat_id]
-    )
-    reply = response.content[0].text
+    if group_local.get(chat_id):
+        if not await ensure_ollama_awake():
+            await thinking.edit_text("🖥 Большой комп выключен.")
+            return
+        try:
+            ollama_messages = [{"role": "system", "content": system}] + group_sessions[chat_id]
+            reply = ask_ollama(ollama_messages)
+            reply = md_to_tg_html(reply)
+        except Exception as e:
+            await thinking.edit_text(f"🖥 Ollama не отвечает: {e}")
+            return
+    else:
+        model = "claude-sonnet-4-6" if group_think.get(chat_id) else "claude-haiku-4-5-20251001"
+        response = client.messages.create(
+            model=model,
+            max_tokens=800,
+            system=system,
+            messages=group_sessions[chat_id]
+        )
+        reply = response.content[0].text
     group_sessions[chat_id].append({"role": "assistant", "content": reply})
     save_group_sessions()
     await send_html(thinking, reply)
