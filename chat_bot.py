@@ -10,7 +10,7 @@ import urllib.parse
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
-from datetime import datetime
+from datetime import datetime, date
 import anthropic
 import openai
 import tempfile
@@ -40,6 +40,18 @@ logging.basicConfig(level=logging.INFO)
 # stores last digest text per user for voice playback
 last_digest: dict[int, str] = {}
 
+# Keywords that trigger auto-browse even without /browse mode
+BROWSE_TRIGGERS = [
+    "поищи", "погугли", "найди в сети", "найди в интернете",
+    "что сейчас", "что происходит", "последние новости", "свежие новости",
+    "актуальные новости", "новости про", "новости о",
+    "search for", "look up", "find online", "latest news", "current news",
+    "what's happening", "what is happening",
+]
+
+# Cached bot username — populated in post_init, avoids API call on every group message
+_bot_username: str = ""
+
 # ─── FORMATTING ───────────────────────────────────────────
 HTML_FORMAT_INSTRUCTION = (
     "Format your reply using Telegram HTML: "
@@ -49,19 +61,18 @@ HTML_FORMAT_INSTRUCTION = (
 
 def md_to_tg_html(text):
     """Convert basic markdown to Telegram HTML as fallback for responses that ignore the instruction."""
-    import re as _re
     # Escape any existing HTML special chars first (except our own tags)
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     # Bold: **text** or __text__
-    text = _re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=_re.DOTALL)
-    text = _re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=_re.DOTALL)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
+    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
     # Italic: *text* or _text_
-    text = _re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    text = _re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
+    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
     # Inline code: `text`
-    text = _re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
     # Blockquote: > line
-    text = _re.sub(r'(?m)^&gt;\s?(.*)', r'<blockquote>\1</blockquote>', text)
+    text = re.sub(r'(?m)^&gt;\s?(.*)', r'<blockquote>\1</blockquote>', text)
     return text
 
 async def send_html(target, text, **kwargs):
@@ -85,15 +96,11 @@ user_think_mode = {}   # user_id -> bool
 user_browse_mode = {}  # user_id -> bool
 user_local_mode = {}   # user_id -> bool
 
-# ─── OLLAMA (local GPU, optional) ────────────────────────
-# Set these in config.py to enable /local mode in the chat bot.
-try:
-    from config import OLLAMA_HOST, OLLAMA_PORT, OLLAMA_MODEL, WINDOWS_MAC  # type: ignore
-except ImportError:
-    OLLAMA_HOST = None
-    OLLAMA_PORT = 11434
-    OLLAMA_MODEL = "gemma4:12b"
-    WINDOWS_MAC = None
+# ─── OLLAMA (local GPU) ───────────────────────────────────
+OLLAMA_HOST  = ""  # set in config.py
+OLLAMA_PORT  = 11434
+OLLAMA_MODEL = "gemma4:12b"
+WINDOWS_MAC  = ""   # set in config.py
 
 def ollama_alive() -> bool:
     try:
@@ -294,12 +301,11 @@ def load_wiki_index():
             return f"{date_range} {headers[0]} | ... | {headers[-1]}"
         return content[:200].replace("\n", " ")
 
-    import datetime as _dt
-    now = _dt.datetime.now()
+    now = datetime.now()
 
     def age_tag(path):
         try:
-            mtime = _dt.datetime.fromtimestamp(os.path.getmtime(path))
+            mtime = datetime.fromtimestamp(os.path.getmtime(path))
             days = (now - mtime).days
             if days <= 3:
                 return "🟢 updated <3d ago"
@@ -352,7 +358,7 @@ Think about intent, not just keywords. Examples:
 - "кто такой X" → look for people files, mentions in project notes
 
 Match files by what they likely *contain*, not just whether the query words appear in the filename.""",
-        messages=[{"role": "user", "content": f"Today's date: {__import__('datetime').date.today()}\n\nQuery: {query}\n\nIndex:\n{index_text}"}]
+        messages=[{"role": "user", "content": f"Today's date: {date.today()}\n\nQuery: {query}\n\nIndex:\n{index_text}"}]
     )
     result = response.content[0].text.strip()
     logging.info(f"Pass1 query={query[:80]!r} → {result[:200]}")
@@ -411,33 +417,47 @@ def _embed(texts, retries=5):
                 raise
 
 def build_rag_index():
-    """Build or refresh the in-memory RAG index."""
+    """Build or refresh the in-memory RAG index — delta mode: only re-embed changed files."""
     global _rag_index, _rag_mtimes
     try:
         _, entries_dict, _ = load_wiki_index()
+
+        # Compute new mtimes and find what changed
+        new_mtimes = {path: os.path.getmtime(path) for path in entries_dict.values()}
+        changed = [(label, path) for label, path in entries_dict.items()
+                   if new_mtimes[path] != _rag_mtimes.get(path)]
+
+        if not changed and _rag_index:
+            logging.info(f"RAG index up to date: {len(_rag_index)} chunks, 0 files changed")
+            return
+
+        # Keep chunks from files that still exist and haven't changed
+        kept = [c for c in _rag_index
+                if c["label"] in entries_dict
+                and new_mtimes.get(entries_dict[c["label"]]) == _rag_mtimes.get(entries_dict[c["label"]])]
+
+        # Build and embed chunks for changed/new files only
         new_chunks = []
-        new_mtimes = {}
-        for label, path in entries_dict.items():
-            mtime = os.path.getmtime(path)
-            new_mtimes[path] = mtime
-            chunks = _chunk_file(label, path)
-            for c in chunks:
+        for label, path in changed:
+            for c in _chunk_file(label, path):
                 if c["text"].strip():
                     new_chunks.append({"label": c["label"], "text": c["text"]})
-        if not new_chunks:
-            return
-        texts = [c["text"] for c in new_chunks]
-        all_embeddings = []
-        for i in range(0, len(texts), 50):
-            all_embeddings.append(_embed(texts[i:i+50]))
-            if i + 50 < len(texts):
-                time.sleep(3)
-        embeddings = np.concatenate(all_embeddings, axis=0)
-        for i, c in enumerate(new_chunks):
-            c["embedding"] = embeddings[i]
-        _rag_index = new_chunks
+
+        if new_chunks:
+            texts = [c["text"] for c in new_chunks]
+            all_embeddings = []
+            for i in range(0, len(texts), 50):
+                all_embeddings.append(_embed(texts[i:i+50]))
+                if i + 50 < len(texts):
+                    time.sleep(1)
+            embeddings = np.concatenate(all_embeddings, axis=0)
+            for i, c in enumerate(new_chunks):
+                c["embedding"] = embeddings[i]
+
+        _rag_index = kept + new_chunks
         _rag_mtimes = new_mtimes
-        logging.info(f"RAG index built: {len(_rag_index)} chunks from {len(entries_dict)} files")
+        logging.info(f"RAG index: {len(_rag_index)} chunks total | "
+                     f"{len(changed)} files re-embedded | {len(kept)} chunks kept")
     except Exception as e:
         logging.error(f"RAG index build failed: {e}. Bot will start without index.")
 
@@ -461,145 +481,6 @@ def load_wiki(query=None):
     if not query:
         return rag_search("general overview", top_k=10)
     return rag_search(query)
-
-def _agentic_wiki_search(query: str) -> str:
-    """Sonnet with tools finds relevant wiki/project content for the query."""
-    tools = [
-        {
-            "name": "list_dir",
-            "description": "List files and subdirectories in a directory",
-            "input_schema": {
-                "type": "object",
-                "properties": {"path": {"type": "string", "description": "Absolute path to directory"}},
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "read_file",
-            "description": "Read the contents of a file",
-            "input_schema": {
-                "type": "object",
-                "properties": {"path": {"type": "string", "description": "Absolute path to file"}},
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "search_files",
-            "description": "Search for a text pattern across files in a directory (recursive grep)",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Search pattern (case-insensitive)"},
-                    "path": {"type": "string", "description": "Directory to search in"}
-                },
-                "required": ["pattern", "path"]
-            }
-        },
-        {
-            "name": "finish",
-            "description": "Return the collected context to answer the user query",
-            "input_schema": {
-                "type": "object",
-                "properties": {"context": {"type": "string", "description": "Relevant content extracted from the wiki"}},
-                "required": ["context"]
-            }
-        }
-    ]
-
-    def run_tool(name, inp):
-        if name == "list_dir":
-            p = inp["path"]
-            if not os.path.exists(p):
-                return f"Directory not found: {p}"
-            items = []
-            for entry in sorted(os.scandir(p), key=lambda e: e.name):
-                items.append(("📁 " if entry.is_dir() else "📄 ") + entry.name)
-            return "\n".join(items) or "(empty)"
-        elif name == "read_file":
-            p = inp["path"]
-            if not os.path.exists(p):
-                return f"File not found: {p}"
-            with open(p, "r") as f:
-                content = f.read()
-            if len(content) > 15000:
-                return content[:15000] + f"\n\n[... truncated, {len(content)} chars total]"
-            return content
-        elif name == "search_files":
-            import subprocess
-            result = subprocess.run(
-                ["grep", "-r", "-i", "-l", "--include=*.md", inp["pattern"], inp["path"]],
-                capture_output=True, text=True, timeout=5
-            )
-            return result.stdout.strip() or "(no matches)"
-        elif name == "finish":
-            return inp["context"]
-
-    today = __import__('datetime').date.today()
-    system = f"""You are a search agent for a personal knowledge base. Today is {today}.
-
-Knowledge base map:
-- {WIKI_DIR}/_index.md — master index of all wiki articles (start here for topic/concept queries)
-- {WIKI_DIR}/ideas.md — product ideas, naming sparks, creative concepts
-- {WIKI_DIR}/reflections.md — personal reflections and observations
-- {WIKI_DIR}/people/ — profiles of people (colleagues, partners, contacts)
-- {WIKI_DIR}/people-index.md — index of all people profiles
-- {WIKI_DIR}/refs/ — reference materials (ad campaigns, external links)
-- {WIKI_DIR}/unmute/ — wiki articles specifically about the Unmute project
-- {PROJECTS_DIR}/<name>/ — one folder per active project (your own names)
-  - chat-log.md — meeting notes, standups, group chat extracts (dated sections)
-  - README or other .md files — project status, research, docs
-
-Search strategy:
-1. For topic/concept queries → read {WIKI_DIR}/_index.md first
-2. For meeting/call/standup queries → search_files() with keyword + date, focus on projects/*/chat-log.md
-3. For people queries → check {WIKI_DIR}/people-index.md, then read the specific profile
-4. For project status → go directly to {PROJECTS_DIR}/<project name>/
-5. Follow links between files when they lead to more relevant content
-
-Be efficient — 2-4 tool calls is usually enough. Never read the whole wiki. When you have the content, call finish()."""
-
-    messages = [{"role": "user", "content": f"Find content relevant to this query: {query}"}]
-
-    for _ in range(10):  # max 10 tool calls
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=4000,
-            system=system,
-            tools=tools,
-            messages=messages
-        )
-        messages.append({"role": "assistant", "content": response.content})
-
-        if response.stop_reason == "end_turn":
-            # extract text if model answered directly
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text
-            return ""
-
-        tool_results = []
-        finished = None
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
-            logging.info(f"tool: {block.name}({list(block.input.values())[0]!r:.80})")
-            result = run_tool(block.name, block.input)
-            if block.name == "finish":
-                finished = result
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": result if block.name != "finish" else "done"
-            })
-
-        messages.append({"role": "user", "content": tool_results})
-
-        if finished is not None:
-            usage = response.usage
-            logging.info(f"Agentic wiki search done in {len(messages)//2} rounds | tokens: {usage.input_tokens} in / {usage.output_tokens} out")
-            return finished
-
-    return ""
 
 def _ddg_search(query: str) -> list:
     """Search DuckDuckGo via ddgs library, return list of {url, snippet}."""
@@ -726,7 +607,7 @@ def save_session(user_id, messages, is_guest=False):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     content = f"source: {'guest_chat' if is_guest else 'chat_extract'}\ndate: {timestamp}\nuser_id: {user_id}\n\n"
     for m in messages:
-        role = "Guest" if (is_guest and m["role"] == "user") else ("Owner" if m["role"] == "user" else "Claude")
+        role = "Guest" if (is_guest and m["role"] == "user") else ("Misha" if m["role"] == "user" else "Claude")
         content += f"**{role}:** {m['content']}\n\n"
     if is_guest:
         name = get_guest_name(user_id)
@@ -751,6 +632,12 @@ async def autosave(context):
 
 async def scheduled_reindex(context):
     build_rag_index()
+
+def mode_status(uid):
+    t = "ON" if user_think_mode.get(uid) else "OFF"
+    b = "ON" if user_browse_mode.get(uid) else "OFF"
+    l = "ON" if user_local_mode.get(uid) else "OFF"
+    return f"🧠 think: {t}  🌐 browse: {b}  🖥 local: {l}"
 
 # ─── HANDLER ──────────────────────────────────────────────
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -794,12 +681,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_digest:{user_id}")]])
         await msg.reply_text(chunks[-1], reply_markup=keyboard)
         return
-
-    def mode_status(uid):
-        t = "ON" if user_think_mode.get(uid) else "OFF"
-        b = "ON" if user_browse_mode.get(uid) else "OFF"
-        l = "ON" if user_local_mode.get(uid) else "OFF"
-        return f"🧠 think: {t}  🌐 browse: {b}  🖥 local: {l}"
 
     # Toggle local mode (owner only)
     if text == "/local" and not is_guest:
@@ -853,13 +734,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     think_mode = user_think_mode.get(user_id, False) and not is_guest
     local_mode = user_local_mode.get(user_id, False) and not is_guest
 
-    BROWSE_TRIGGERS = [
-        "поищи", "погугли", "найди в сети", "найди в интернете",
-        "что сейчас", "что происходит", "последние новости", "свежие новости",
-        "актуальные новости", "новости про", "новости о",
-        "search for", "look up", "find online", "latest news", "current news",
-        "what's happening", "what is happening",
-    ]
     text_lower = text.lower()
     auto_browse = any(t in text_lower for t in BROWSE_TRIGGERS)
     browse_mode = (user_browse_mode.get(user_id, False) or auto_browse) and not is_guest
@@ -883,7 +757,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system_blocks = [
             {
                 "type": "text",
-                "text": f"""You are a sharp thinking partner. You think like the owner — a creative director, brand strategist and systems thinker.
+                "text": f"""You are a sharp thinking partner. You think like Misha — a creative director, brand strategist and systems thinker from London.
 
 Your job is not to answer questions from a database. Your job is to help the guest think better about their ideas — challenge assumptions, find unexpected angles, surface what's really interesting underneath the surface.
 
@@ -894,10 +768,10 @@ Relevant context and frameworks you can draw on:
 {wiki_context}
 
 Rules:
-- Never mention "wiki", "knowledge base", "the owner's notes" or any internal system. The guest doesn't know about any of that.
+- Never mention "wiki", "knowledge base", "Misha's notes" or any internal system. The guest doesn't know about any of that.
 - Don't say "I don't have information on X" — either engage with what you know or ask a question that moves the conversation forward.
 - If the guest asks something factual you're uncertain about, engage with the idea first, then note what you'd want to verify.
-- Apply the owner's perspective and frameworks to whatever the guest brings up.
+- Apply Misha's perspective and frameworks to whatever the guest brings up.
 - Brainstorm as an equal — build on their ideas, throw in unexpected angles, yes-and and then challenge. This is a creative conversation between two people thinking together, not Q&A.
 - Always reply in the same language as the guest's message. {HTML_FORMAT_INSTRUCTION}
 {greeting_instruction}"""
@@ -907,24 +781,24 @@ Rules:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are a wise thinking partner for the owner — a creative director and brand strategist.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
+                "text": f"You are a wise thinking partner for Misha — a creative director and brand strategist from London.\n\nHis knowledge base is your foundation — you have full access to everything in it:\n\nWIKI — his full knowledge base:\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
                 "type": "text",
-                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how the owner sees the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
+                "text": f"USER MODEL:\n{user_model[:3000]}{web_extra}\n\nYour role is NOT to answer questions — it is to expand thinking. For each message:\n- Connect the idea to unexpected angles, broader concepts, or contrasting perspectives\n- Ask one sharp question that might shift how Misha sees the problem\n- Surface what might be missing or worth questioning\n- Think out loud, be speculative, bring in ideas from outside his world\n\nBe a sparring partner, not a search engine. Challenge gently. Surprise occasionally. Always reply in the same language as the user's message. " + HTML_FORMAT_INSTRUCTION
             }
         ]
     else:
         system_blocks = [
             {
                 "type": "text",
-                "text": f"You are the owner's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything he knows:\n\n{wiki_context}",
+                "text": f"You are Misha's thinking partner — sharp, curious, a little unpredictable.\n\nYou know everything he knows:\n\n{wiki_context}",
                 "cache_control": {"type": "ephemeral"}
             },
             {
                 "type": "text",
-                "text": f"USER MODEL — who the owner is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with him:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in the notes connects to what the owner is saying — bring it in naturally, don't announce it.\n- Match his energy: if he's thinking out loud, think with him. If he wants a quick answer, give it.\n- Always reply in the same language as his message."
+                "text": f"USER MODEL — who Misha is:\n{user_model[:3000]}{web_extra}\n\nHow to talk with him:\n- Match response length to the message: a quick remark gets a quick reply, a deep question gets a full answer. Never pad, never truncate.\n- Be direct, skip preamble. No \"Great question!\", no summaries of what you just said.\n- Have opinions. Agree or push back, don't sit on the fence.\n- If something in his notes connects to what he's saying — bring it in naturally, don't announce it.\n- Match his energy: if he's thinking out loud, think with him. If he wants a quick answer, give it.\n- Always reply in the same language as his message."
             }
         ]
 
@@ -1168,12 +1042,11 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_group_buffers()
 
     # Check for @mention
-    bot_username = (await context.bot.get_me()).username
     if msg.entities:
         for entity in msg.entities:
             if entity.type == "mention":
                 mention = text[entity.offset:entity.offset + entity.length]
-                if mention.lower() == f"@{bot_username.lower()}":
+                if mention.lower() == f"@{_bot_username.lower()}":
                     query = text.replace(mention, "").strip()
                     await handle_group_mention(update, context, query)
                     return
@@ -1207,6 +1080,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_voice_digest(query, text)
 
 async def post_init(app):
+    global _bot_username
+    me = await app.bot.get_me()
+    _bot_username = me.username
     from telegram import BotCommand
     await app.bot.set_my_commands([
         BotCommand("think",   "Режим глубокого анализа (Sonnet)"),
