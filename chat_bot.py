@@ -599,6 +599,29 @@ def load_wiki(query=None):
         return rag_search("general overview", top_k=10)
     return rag_search(query)
 
+def load_wiki_full(query: str, max_files: int = 10, max_chars: int = 500_000) -> str:
+    """Load full file content for large-context models — no chunking."""
+    index_text, entries_dict, all_labels = load_wiki_index()
+    if not index_text:
+        return load_wiki(query)
+    selected = select_relevant_files(query, index_text, all_labels)
+    if not selected:
+        return load_wiki(query)
+    parts = []
+    total = 0
+    for label in selected[:max_files]:
+        path = entries_dict.get(label)
+        if not path or not os.path.exists(path):
+            continue
+        with open(path) as f:
+            content = f.read()
+        parts.append(f"### {label}\n{content}")
+        total += len(content)
+        if total > max_chars:
+            break
+    logging.info(f"load_wiki_full: {len(parts)} files, {total:,} chars")
+    return "\n\n".join(parts) if parts else load_wiki(query)
+
 def _ddg_search(query: str) -> list:
     """Search DuckDuckGo via ddgs library, return list of {url, snippet}."""
     try:
@@ -767,7 +790,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_guest = user_id in guest_ids
 
     # Ignore unknown commands
-    if text.startswith("/") and text not in ["/think", "/browse", "/digest", "/status", "/tasks", "/local"]:
+    if text.startswith("/") and text not in ["/think", "/browse", "/digest", "/status", "/tasks", "/local", "/research"]:
         return
 
     # Digest — latest thinking digest (owner only)
@@ -845,10 +868,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thinking_msg = await msg.reply_text("…")
 
     user_model = load_user_model(public=is_guest)
-    wiki_context = load_wiki(query=text)
-
     think_mode = user_think_mode.get(user_id, False) and not is_guest
     local_mode = user_local_mode.get(user_id, False) and not is_guest
+    # Local mode loads full files (262K ctx); Claude uses RAG chunks
+    wiki_context = load_wiki_full(query=text) if local_mode else load_wiki(query=text)
 
     text_lower = text.lower()
     auto_browse = any(t in text_lower for t in BROWSE_TRIGGERS)
@@ -926,15 +949,10 @@ Rules:
         system_text = system_text.replace(
             "WEB SEARCH: returned no results — do not claim to be browsing.", ""
         )
+        system_text += "\n\nYou have access to search and fetch_page tools. Use them when the user asks about news or current events."
         ollama_messages = [{"role": "system", "content": system_text}] + sessions[user_id]
-        is_research = any(t in text_lower for t in RESEARCH_TRIGGERS)
         try:
-            if is_research:
-                reply = await _run_research(ollama_messages, thinking_msg)
-            else:
-                system_text += "\n\nYou have access to search and fetch_page tools. Use them whenever the user asks about news, current events, or anything that may have changed recently."
-                ollama_messages[0] = {"role": "system", "content": system_text}
-                reply = await asyncio.to_thread(ask_ollama_browse, ollama_messages)
+            reply = await asyncio.to_thread(ask_ollama_browse, ollama_messages)
         except Exception as e:
             await thinking_msg.edit_text(f"🖥 Ollama не отвечает: {e}")
             return
@@ -952,6 +970,113 @@ Rules:
 
     sessions[user_id].append({"role": "assistant", "content": reply})
     await send_html(thinking_msg, reply)
+
+# ─── /research ────────────────────────────────────────────
+async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    user_id = msg.from_user.id
+    if user_id != OWNER_ID:
+        return
+    query = (msg.text or "").replace("/research", "").strip()
+    if not query:
+        await msg.reply_text("Напиши запрос: /research <тема>")
+        return
+    if not await ensure_ollama_awake():
+        await msg.reply_text("🖥 Большой комп выключен.")
+        return
+
+    thinking = await msg.reply_text("🔍 Загружаю базу знаний...")
+
+    # Step 1: relevant wiki files (full content)
+    index_text, entries_dict, all_labels = load_wiki_index()
+    selected = await asyncio.to_thread(select_relevant_files, query, index_text, all_labels)
+
+    # Also include recently modified files if query is about recent updates
+    recent_kw = ["нов", "recent", "обновлен", "за неделю", "за 2 недел", "апдейт", "update", "lately"]
+    if any(k in query.lower() for k in recent_kw):
+        now_ts = time.time()
+        for label in all_labels:
+            path = entries_dict[label]
+            try:
+                if (now_ts - os.path.getmtime(path)) / 86400 <= 14 and label not in selected:
+                    selected.append(label)
+            except Exception:
+                pass
+
+    wiki_parts = []
+    total_chars = 0
+    for label in selected[:20]:
+        path = entries_dict.get(label)
+        if not path or not os.path.exists(path):
+            continue
+        with open(path) as f:
+            content = f.read()
+        wiki_parts.append(f"### {label}\n{content}")
+        total_chars += len(content)
+        if total_chars > 600_000:
+            break
+    wiki_context = "\n\n".join(wiki_parts)
+    logging.info(f"/research: {len(wiki_parts)} wiki files, {total_chars:,} chars")
+
+    # Step 2: generate search queries
+    await thinking.edit_text("🌐 Генерирую поисковые запросы...")
+    queries_raw = await asyncio.to_thread(ask_ollama, [
+        {"role": "system", "content": "Generate 3 focused web search queries for researching this topic. Return only the queries, one per line, no numbering or bullets."},
+        {"role": "user", "content": query},
+    ])
+    search_queries = [q.strip() for q in queries_raw.strip().split("\n") if q.strip()][:3]
+
+    # Step 3: web search + fetch pages
+    web_snippets = []
+    for q in search_queries:
+        try:
+            await thinking.edit_text(f"🌐 Ищу: {q[:55]}...")
+        except Exception:
+            pass
+        web_snippets.extend(await asyncio.to_thread(_ddg_search, q))
+
+    pages_text = []
+    for r in web_snippets[:5]:
+        try:
+            await thinking.edit_text(f"📄 Читаю: {r['url'][:60]}...")
+        except Exception:
+            pass
+        page = await asyncio.to_thread(_fetch_page, r["url"])
+        if page:
+            pages_text.append(f"Source: {r['url']}\n{page}")
+    web_context = "\n\n---\n\n".join(pages_text) if pages_text else "No web results."
+
+    # Step 4: synthesize
+    await thinking.edit_text("🧠 Синтезирую...")
+    system_prompt = (
+        "You are doing deep research on the given topic.\n\n"
+        f"PERSONAL KNOWLEDGE BASE (Misha's notes):\n{wiki_context}\n\n"
+        f"WEB SOURCES:\n{web_context}\n\n"
+        "Synthesize everything into a comprehensive, well-structured answer. "
+        "Be specific and concrete. Reply in the same language as the query."
+    )
+    api_url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
+    payload = json.dumps({
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+        ],
+        "stream": False, "keep_alive": -1,
+        "options": {"num_ctx": 131072},
+    }).encode()
+
+    def _call_ollama():
+        req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read().decode())["message"]["content"]
+
+    try:
+        result_text = await asyncio.to_thread(_call_ollama)
+    except Exception as e:
+        await thinking.edit_text(f"🖥 Ollama не отвечает: {e}")
+        return
+    await send_html(thinking, md_to_tg_html(result_text))
 
 # ─── GROUP CHAT ───────────────────────────────────────────
 async def handle_group_mention(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
@@ -1205,11 +1330,13 @@ async def post_init(app):
     _bot_username = me.username
     from telegram import BotCommand
     await app.bot.set_my_commands([
-        BotCommand("think",   "Режим глубокого анализа (Sonnet)"),
-        BotCommand("browse",  "Поиск в интернете"),
-        BotCommand("digest",  "Последний thinking digest"),
-        BotCommand("status",  "Статус проектов за неделю"),
-        BotCommand("tasks",   "Открытые задачи в Notion"),
+        BotCommand("think",    "Режим глубокого анализа (Sonnet)"),
+        BotCommand("browse",   "Поиск в интернете"),
+        BotCommand("local",    "Локальная модель на GPU"),
+        BotCommand("research", "Глубокий рисерч через локальную модель"),
+        BotCommand("digest",   "Последний thinking digest"),
+        BotCommand("status",   "Статус проектов за неделю"),
+        BotCommand("tasks",    "Открытые задачи в Notion"),
     ])
     # Build RAG index in background so bot starts polling immediately
     asyncio.create_task(asyncio.to_thread(build_rag_index))
@@ -1229,6 +1356,8 @@ if __name__ == "__main__":
     ))
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(handle_callback))
+    # /research command (before catch-all)
+    app.add_handler(CommandHandler("research", handle_research))
     # Private messages
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.TEXT | filters.COMMAND), handle))
     app.job_queue.run_repeating(autosave, interval=1800, first=1800)
