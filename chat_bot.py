@@ -1051,6 +1051,7 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     seen_urls: set = set()
     step = 0
+    gathered: list = []  # (source_label, full_content) for synthesis
 
     step_desc = ["Начинаю рисерч..."]
     done_evt = asyncio.Event()
@@ -1072,7 +1073,7 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prog_task = asyncio.create_task(progress_loop())
 
     def research_loop():
-        nonlocal step, conv
+        nonlocal step, conv, gathered
         for _ in range(25):
             step += 1
             step_desc.append(f"Шаг {step}")
@@ -1093,48 +1094,52 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 args = tc["function"]["arguments"]
                 if isinstance(args, str):
                     args = json.loads(args)
+                source_label = ""
                 if fn == "load_wiki_file":
                     fname = args.get("filename", "")
                     step_desc.append(f"📚 Читаю: {fname}")
+                    source_label = f"wiki:{fname}"
                     path = entries_dict.get(fname)
                     if path and os.path.exists(path):
                         with open(path) as f:
                             tool_result = f.read()
-                        if len(tool_result) > 4000:
-                            tool_result = tool_result[:4000] + "\n...[truncated]"
                     else:
                         tool_result = f"File not found: {fname}"
                 elif fn == "search_web":
                     q = args.get("query", "")
                     step_desc.append(f"🌐 Ищу: {q[:55]}")
+                    source_label = f"search:{q[:40]}"
                     results = _ddg_search(q)
                     new = [r for r in results if r["url"] not in seen_urls]
                     for r in new:
                         seen_urls.add(r["url"])
-                    tool_result = "\n".join(f"{r['url']}: {r['snippet']}" for r in new[:4]) or "No results"
+                    tool_result = "\n".join(f"{r['url']}: {r['snippet']}" for r in new[:5]) or "No results"
                 elif fn == "fetch_page":
                     url_arg = args.get("url", "")
                     step_desc.append(f"📄 Читаю: {url_arg[:60]}")
+                    source_label = f"page:{url_arg}"
                     tool_result = _fetch_page(url_arg) or "Could not fetch"
-                    if len(tool_result) > 3000:
-                        tool_result = tool_result[:3000] + "\n...[truncated]"
                 else:
                     tool_result = "Unknown tool"
                 logging.info(f"research: {fn}({args}) → {len(tool_result)} chars")
+                # Store full result for conv (model reasoning), label for synthesis notes
+                gathered.append((source_label, tool_result))
                 conv.append({"role": "tool", "content": tool_result})
-        # Max steps — compress and synthesize
+        # Max steps — build compact notes for synthesis (head + tail, no mid-truncation)
         step_desc.append(f"🧠 Синтезирую...")
-        # Build compact research notes (tool results only, truncated)
         notes_parts = []
-        for m in conv:
-            if m.get("role") == "tool":
-                content = m.get("content", "")
-                notes_parts.append(content[:1500] + ("..." if len(content) > 1500 else ""))
+        for label, content in gathered:
+            if len(content) <= 3000:
+                snippet = content
+            else:
+                # Preserve start (context/intro) and end (recent entries, conclusions)
+                snippet = content[:2000] + f"\n...[середина пропущена, {len(content)-2500} chars]...\n" + content[-500:]
+            notes_parts.append(f"[{label}]\n{snippet}")
         notes_text = "\n\n---\n\n".join(notes_parts)
         synthesis_conv = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query},
-            {"role": "user", "content": f"GATHERED RESEARCH DATA:\n\n{notes_text}\n\nСинтезируй всё в полный структурированный ответ на русском."},
+            {"role": "user", "content": f"GATHERED RESEARCH DATA:\n\n{notes_text}\n\nСинтезируй всё в полный структурированный ответ на русском языке."},
         ]
         payload = json.dumps({"model": OLLAMA_MODEL, "messages": synthesis_conv, "stream": False, "keep_alive": -1, "options": {"num_ctx": 32768}}).encode()
         req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
