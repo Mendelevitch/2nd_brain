@@ -50,6 +50,12 @@ BROWSE_TRIGGERS = [
     "what's happening", "what is happening",
 ]
 
+RESEARCH_TRIGGERS = [
+    "исследуй", "рисерч", "сделай рисерч", "research", "deep dive",
+    "найди всё про", "найди все про", "собери информацию",
+    "изучи подробно", "подробный анализ", "что известно про", "что известно о",
+]
+
 # Cached bot username — populated in post_init, avoids API call on every group message
 _bot_username: str = ""
 
@@ -124,7 +130,6 @@ async def ensure_ollama_awake() -> bool:
     if ollama_alive():
         return True
     wake_windows()
-    import asyncio
     for _ in range(18):
         await asyncio.sleep(5)
         if ollama_alive():
@@ -185,6 +190,117 @@ def ask_ollama_browse(messages: list[dict], max_steps: int = 6) -> str:
             logging.info(f"ollama tool: {fn}({args}) → {len(tool_result)} chars")
             conv.append({"role": "tool", "content": tool_result})
     return conv[-1].get("content", "")
+
+
+def ask_ollama_research(messages: list[dict], status: list) -> str:
+    """Deep research agentic loop: search_wiki + search_web + fetch_page, up to 20 steps."""
+    tools = [
+        {"type": "function", "function": {
+            "name": "search_wiki",
+            "description": "Search the personal knowledge base for relevant notes, frameworks and past thinking.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "What to look for in the knowledge base"}
+            }, "required": ["query"]}
+        }},
+        {"type": "function", "function": {
+            "name": "search_web",
+            "description": "Search the web. Run multiple focused queries on different angles of the topic.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "Search query"}
+            }, "required": ["query"]}
+        }},
+        {"type": "function", "function": {
+            "name": "fetch_page",
+            "description": "Read the full content of a webpage by URL.",
+            "parameters": {"type": "object", "properties": {
+                "url": {"type": "string", "description": "URL to fetch"}
+            }, "required": ["url"]}
+        }},
+    ]
+    api_url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
+    conv = list(messages)
+    conv[0] = dict(conv[0])
+    conv[0]["content"] += (
+        "\n\nYou are in DEEP RESEARCH MODE. Investigate the topic thoroughly before answering. "
+        "Start with search_wiki to find relevant personal notes, then use search_web with several "
+        "different focused queries, then fetch key pages to read them in full. "
+        "Only synthesize after gathering enough material (at least 4–6 sources). "
+        "Do not stop early — keep searching until you have a complete picture."
+    )
+
+    for step in range(20):
+        status.append(f"🔍 Исследую... шаг {step + 1}")
+        payload = json.dumps({
+            "model": OLLAMA_MODEL, "messages": conv,
+            "tools": tools, "stream": False, "keep_alive": -1,
+            "options": {"num_ctx": 8192},
+        }).encode()
+        req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=180) as r:
+            resp = json.loads(r.read().decode())
+        msg = resp["message"]
+        conv.append(msg)
+        if not msg.get("tool_calls"):
+            return msg.get("content", "")
+        for tc in msg["tool_calls"]:
+            fn = tc["function"]["name"]
+            args = tc["function"]["arguments"]
+            if isinstance(args, str):
+                args = json.loads(args)
+            if fn == "search_wiki":
+                query = args.get("query", "")
+                status.append(f"📚 База знаний: {query[:50]}")
+                tool_result = load_wiki(query=query) or "Ничего не найдено в базе знаний."
+            elif fn == "search_web":
+                query = args.get("query", "")
+                status.append(f"🌐 Поиск: {query[:50]}")
+                results = _ddg_search(query)
+                tool_result = "\n".join(f"{r['url']}: {r['snippet']}" for r in results[:5]) or "No results"
+            elif fn == "fetch_page":
+                page_url = args.get("url", "")
+                status.append(f"📄 Читаю: {page_url[:60]}")
+                tool_result = _fetch_page(page_url) or "Could not fetch page"
+                if len(tool_result) > 6000:
+                    tool_result = tool_result[:6000] + "\n...[truncated]"
+            else:
+                tool_result = "Unknown tool"
+            logging.info(f"research: {fn}({args}) → {len(tool_result)} chars")
+            conv.append({"role": "tool", "content": tool_result})
+
+    # Hit max steps — force synthesis
+    conv.append({"role": "user", "content": "Информации достаточно. Синтезируй всё в полный структурированный ответ."})
+    payload = json.dumps({"model": OLLAMA_MODEL, "messages": conv, "stream": False, "keep_alive": -1}).encode()
+    req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=180) as r:
+        resp = json.loads(r.read().decode())
+    return resp["message"].get("content", "")
+
+
+async def _run_research(messages: list[dict], thinking_msg) -> str:
+    """Run ask_ollama_research in a thread with live progress updates to thinking_msg."""
+    status = ["🔍 Начинаю исследование..."]
+    done = asyncio.Event()
+
+    async def progress_updater():
+        last = ""
+        while not done.is_set():
+            await asyncio.sleep(3)
+            current = status[-1]
+            if current != last:
+                last = current
+                try:
+                    await thinking_msg.edit_text(current)
+                except Exception:
+                    pass
+
+    updater = asyncio.create_task(progress_updater())
+    try:
+        result = await asyncio.to_thread(ask_ollama_research, messages, status)
+    finally:
+        done.set()
+        await updater
+    return result
+
 
 # ─── GROUP STATE ──────────────────────────────────────────
 group_buffers = {}   # chat_id → [{"author", "text", "msg_id", "ts"}]
@@ -518,7 +634,6 @@ def _fetch_page(url: str, max_chars: int = 2500) -> str:
 
 async def web_search(question: str) -> str:
     """Multi-query search: generate queries → search DDG → fetch pages."""
-    import asyncio
     try:
         resp = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -811,11 +926,15 @@ Rules:
         system_text = system_text.replace(
             "WEB SEARCH: returned no results — do not claim to be browsing.", ""
         )
-        system_text += "\n\nYou have access to search and fetch_page tools. Use them whenever the user asks about news, current events, or anything that may have changed recently. Search proactively — do not say you cannot access the internet."
         ollama_messages = [{"role": "system", "content": system_text}] + sessions[user_id]
+        is_research = any(t in text_lower for t in RESEARCH_TRIGGERS)
         try:
-            import asyncio
-            reply = await asyncio.to_thread(ask_ollama_browse, ollama_messages)
+            if is_research:
+                reply = await _run_research(ollama_messages, thinking_msg)
+            else:
+                system_text += "\n\nYou have access to search and fetch_page tools. Use them whenever the user asks about news, current events, or anything that may have changed recently."
+                ollama_messages[0] = {"role": "system", "content": system_text}
+                reply = await asyncio.to_thread(ask_ollama_browse, ollama_messages)
         except Exception as e:
             await thinking_msg.edit_text(f"🖥 Ollama не отвечает: {e}")
             return
