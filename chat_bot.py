@@ -56,6 +56,13 @@ RESEARCH_TRIGGERS = [
     "изучи подробно", "подробный анализ", "что известно про", "что известно о",
 ]
 
+WIKI_TRIGGERS = [
+    "посмотри в вики", "загляни в вики", "проверь в вики", "что у меня в вики",
+    "что там в вики", "загрузи из вики", "посмотри в базе", "что у меня про",
+    "что там у меня про", "найди в вики", "look in wiki", "check wiki", "check the wiki",
+    "what do i have about", "what do i have on", "from my wiki",
+]
+
 # Cached bot username — populated in post_init, avoids API call on every group message
 _bot_username: str = ""
 
@@ -104,10 +111,10 @@ user_browse_mode = {}  # user_id -> bool
 user_local_mode = {}   # user_id -> bool
 
 # ─── OLLAMA (local GPU) ───────────────────────────────────
-OLLAMA_HOST  = ""  # set in config.py
+OLLAMA_HOST  = "100.101.68.17"
 OLLAMA_PORT  = 11434
 OLLAMA_MODEL = "gemma4:12b"
-WINDOWS_MAC  = ""   # set in config.py
+WINDOWS_MAC = ""   # set in config.py
 
 def ollama_alive() -> bool:
     try:
@@ -870,10 +877,17 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_model = load_user_model(public=is_guest)
     think_mode = user_think_mode.get(user_id, False) and not is_guest
     local_mode = user_local_mode.get(user_id, False) and not is_guest
-    # Local mode loads full files (262K ctx); Claude uses RAG chunks
-    wiki_context = load_wiki_full(query=text) if local_mode else load_wiki(query=text)
 
     text_lower = text.lower()
+    auto_wiki = any(t in text_lower for t in WIKI_TRIGGERS) and not is_guest
+    # Local mode: full files (262K ctx). Explicit wiki request: full files with limit. Default: RAG chunks.
+    if local_mode:
+        wiki_context = load_wiki_full(query=text)
+    elif auto_wiki:
+        wiki_context = load_wiki_full(query=text, max_files=6, max_chars=80_000)
+    else:
+        wiki_context = load_wiki(query=text)
+
     auto_browse = any(t in text_lower for t in BROWSE_TRIGGERS)
     browse_mode = (user_browse_mode.get(user_id, False) or auto_browse) and not is_guest
 
@@ -1038,16 +1052,21 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seen_urls: set = set()
     step = 0
 
-    status = [f"🔍 Начинаю рисерч..."]
+    step_desc = ["Начинаю рисерч..."]
     done_evt = asyncio.Event()
     start_ts = time.time()
 
     async def progress_loop():
+        last_text = ""
         while not done_evt.is_set():
-            try:
-                await thinking.edit_text(status[-1])
-            except Exception:
-                pass
+            elapsed = int(time.time() - start_ts)
+            text_upd = f"🔍 {step_desc[-1]} · {elapsed // 60}м {elapsed % 60}с"
+            if text_upd != last_text:
+                try:
+                    await thinking.edit_text(text_upd)
+                    last_text = text_upd
+                except Exception:
+                    pass
             await asyncio.sleep(5)
 
     prog_task = asyncio.create_task(progress_loop())
@@ -1056,12 +1075,11 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nonlocal step, conv
         for _ in range(25):
             step += 1
-            elapsed = int(time.time() - start_ts)
-            status.append(f"🔍 Шаг {step} · {elapsed // 60}м {elapsed % 60}с")
+            step_desc.append(f"Шаг {step}")
             payload = json.dumps({
                 "model": OLLAMA_MODEL, "messages": conv,
                 "tools": tools, "stream": False, "keep_alive": -1,
-                "options": {"num_ctx": 65536},
+                "options": {"num_ctx": 32768},
             }).encode()
             req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=180) as r:
@@ -1077,37 +1095,48 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     args = json.loads(args)
                 if fn == "load_wiki_file":
                     fname = args.get("filename", "")
-                    status.append(f"📚 Читаю: {fname}")
+                    step_desc.append(f"📚 Читаю: {fname}")
                     path = entries_dict.get(fname)
                     if path and os.path.exists(path):
                         with open(path) as f:
                             tool_result = f.read()
-                        if len(tool_result) > 8000:
-                            tool_result = tool_result[:8000] + "\n...[truncated]"
+                        if len(tool_result) > 4000:
+                            tool_result = tool_result[:4000] + "\n...[truncated]"
                     else:
                         tool_result = f"File not found: {fname}"
                 elif fn == "search_web":
                     q = args.get("query", "")
-                    status.append(f"🌐 Ищу: {q[:55]}")
+                    step_desc.append(f"🌐 Ищу: {q[:55]}")
                     results = _ddg_search(q)
                     new = [r for r in results if r["url"] not in seen_urls]
                     for r in new:
                         seen_urls.add(r["url"])
-                    tool_result = "\n".join(f"{r['url']}: {r['snippet']}" for r in new[:5]) or "No results"
+                    tool_result = "\n".join(f"{r['url']}: {r['snippet']}" for r in new[:4]) or "No results"
                 elif fn == "fetch_page":
                     url_arg = args.get("url", "")
-                    status.append(f"📄 Читаю: {url_arg[:60]}")
+                    step_desc.append(f"📄 Читаю: {url_arg[:60]}")
                     tool_result = _fetch_page(url_arg) or "Could not fetch"
-                    if len(tool_result) > 5000:
-                        tool_result = tool_result[:5000] + "\n...[truncated]"
+                    if len(tool_result) > 3000:
+                        tool_result = tool_result[:3000] + "\n...[truncated]"
                 else:
                     tool_result = "Unknown tool"
                 logging.info(f"research: {fn}({args}) → {len(tool_result)} chars")
                 conv.append({"role": "tool", "content": tool_result})
-        # Max steps — force synthesis
-        conv.append({"role": "user", "content": "Достаточно. Синтезируй всё в полный структурированный ответ."})
-        status.append(f"🧠 Синтезирую...")
-        payload = json.dumps({"model": OLLAMA_MODEL, "messages": conv, "stream": False, "keep_alive": -1, "options": {"num_ctx": 65536}}).encode()
+        # Max steps — compress and synthesize
+        step_desc.append(f"🧠 Синтезирую...")
+        # Build compact research notes (tool results only, truncated)
+        notes_parts = []
+        for m in conv:
+            if m.get("role") == "tool":
+                content = m.get("content", "")
+                notes_parts.append(content[:1500] + ("..." if len(content) > 1500 else ""))
+        notes_text = "\n\n---\n\n".join(notes_parts)
+        synthesis_conv = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+            {"role": "user", "content": f"GATHERED RESEARCH DATA:\n\n{notes_text}\n\nСинтезируй всё в полный структурированный ответ на русском."},
+        ]
+        payload = json.dumps({"model": OLLAMA_MODEL, "messages": synthesis_conv, "stream": False, "keep_alive": -1, "options": {"num_ctx": 32768}}).encode()
         req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=600) as r:
             return json.loads(r.read().decode())["message"]["content"]
