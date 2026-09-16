@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import re
@@ -1091,12 +1092,13 @@ async def post_init(app):
         BotCommand("status",  "Статус проектов за неделю"),
         BotCommand("tasks",   "Открытые задачи в Notion"),
     ])
+    # Build RAG index in background so bot starts polling immediately
+    asyncio.create_task(asyncio.to_thread(build_rag_index))
 
 if __name__ == "__main__":
     load_group_state()
     load_group_sessions()
     load_group_buffers()
-    build_rag_index()
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     # Track members joining
     from telegram.ext import ChatMemberHandler
