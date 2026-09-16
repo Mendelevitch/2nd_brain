@@ -985,97 +985,143 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("🖥 Большой комп выключен.")
         return
 
-    thinking = await msg.reply_text("🔍 Загружаю базу знаний...")
+    thinking = await msg.reply_text("🔍 Готовлю контекст...")
 
-    # Step 1: relevant wiki files (full content)
+    # Context: recent session + wiki index only (no full files upfront)
     index_text, entries_dict, all_labels = load_wiki_index()
-    selected = await asyncio.to_thread(select_relevant_files, query, index_text, all_labels)
+    session_msgs = sessions.get(user_id, [])[-10:]
+    session_ctx = "\n".join(
+        f"{m['role'].upper()}: {m['content'][:400]}" for m in session_msgs
+    ) if session_msgs else ""
 
-    # Also include recently modified files if query is about recent updates
-    recent_kw = ["нов", "recent", "обновлен", "за неделю", "за 2 недел", "апдейт", "update", "lately"]
-    if any(k in query.lower() for k in recent_kw):
-        now_ts = time.time()
-        for label in all_labels:
-            path = entries_dict[label]
+    tools = [
+        {"type": "function", "function": {
+            "name": "load_wiki_file",
+            "description": "Load the full content of a file from the knowledge base by its filename.",
+            "parameters": {"type": "object", "properties": {
+                "filename": {"type": "string", "description": "Exact filename as shown in the index (e.g. 'brand-strategy.md' or 'projects/project-x.md')"}
+            }, "required": ["filename"]}
+        }},
+        {"type": "function", "function": {
+            "name": "search_web",
+            "description": "Search the web. Run multiple queries on different angles.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string"}
+            }, "required": ["query"]}
+        }},
+        {"type": "function", "function": {
+            "name": "fetch_page",
+            "description": "Read the full content of a webpage by URL.",
+            "parameters": {"type": "object", "properties": {
+                "url": {"type": "string"}
+            }, "required": ["url"]}
+        }},
+    ]
+
+    system_prompt = (
+        "You are a deep research assistant.\n\n"
+        + (f"RECENT CONVERSATION:\n{session_ctx}\n\n" if session_ctx else "")
+        + f"KNOWLEDGE BASE INDEX (load files by name to read them in full):\n{index_text}\n\n"
+        "Research the query thoroughly:\n"
+        "1. Load relevant wiki files with load_wiki_file to read personal notes\n"
+        "2. Search the web with search_web (multiple queries, different angles)\n"
+        "3. Fetch key pages with fetch_page\n"
+        "4. Only synthesize after gathering enough material\n"
+        "Reply in the same language as the query."
+    )
+
+    api_url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
+    conv = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": query},
+    ]
+    seen_urls: set = set()
+    step = 0
+
+    status = [f"🔍 Начинаю рисерч..."]
+    done_evt = asyncio.Event()
+    start_ts = time.time()
+
+    async def progress_loop():
+        while not done_evt.is_set():
             try:
-                if (now_ts - os.path.getmtime(path)) / 86400 <= 14 and label not in selected:
-                    selected.append(label)
+                await thinking.edit_text(status[-1])
             except Exception:
                 pass
+            await asyncio.sleep(5)
 
-    wiki_parts = []
-    total_chars = 0
-    for label in selected[:20]:
-        path = entries_dict.get(label)
-        if not path or not os.path.exists(path):
-            continue
-        with open(path) as f:
-            content = f.read()
-        wiki_parts.append(f"### {label}\n{content}")
-        total_chars += len(content)
-        if total_chars > 600_000:
-            break
-    wiki_context = "\n\n".join(wiki_parts)
-    logging.info(f"/research: {len(wiki_parts)} wiki files, {total_chars:,} chars")
+    prog_task = asyncio.create_task(progress_loop())
 
-    # Step 2: generate search queries
-    await thinking.edit_text("🌐 Генерирую поисковые запросы...")
-    queries_raw = await asyncio.to_thread(ask_ollama, [
-        {"role": "system", "content": "Generate 3 focused web search queries for researching this topic. Return only the queries, one per line, no numbering or bullets."},
-        {"role": "user", "content": query},
-    ])
-    search_queries = [q.strip() for q in queries_raw.strip().split("\n") if q.strip()][:3]
-
-    # Step 3: web search + fetch pages
-    web_snippets = []
-    for q in search_queries:
-        try:
-            await thinking.edit_text(f"🌐 Ищу: {q[:55]}...")
-        except Exception:
-            pass
-        web_snippets.extend(await asyncio.to_thread(_ddg_search, q))
-
-    pages_text = []
-    for r in web_snippets[:5]:
-        try:
-            await thinking.edit_text(f"📄 Читаю: {r['url'][:60]}...")
-        except Exception:
-            pass
-        page = await asyncio.to_thread(_fetch_page, r["url"])
-        if page:
-            pages_text.append(f"Source: {r['url']}\n{page}")
-    web_context = "\n\n---\n\n".join(pages_text) if pages_text else "No web results."
-
-    # Step 4: synthesize
-    await thinking.edit_text("🧠 Синтезирую...")
-    system_prompt = (
-        "You are doing deep research on the given topic.\n\n"
-        f"PERSONAL KNOWLEDGE BASE (Misha's notes):\n{wiki_context}\n\n"
-        f"WEB SOURCES:\n{web_context}\n\n"
-        "Synthesize everything into a comprehensive, well-structured answer. "
-        "Be specific and concrete. Reply in the same language as the query."
-    )
-    api_url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
-    payload = json.dumps({
-        "model": OLLAMA_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query},
-        ],
-        "stream": False, "keep_alive": -1,
-        "options": {"num_ctx": 131072},
-    }).encode()
-
-    def _call_ollama():
+    def research_loop():
+        nonlocal step, conv
+        for _ in range(25):
+            step += 1
+            elapsed = int(time.time() - start_ts)
+            status.append(f"🔍 Шаг {step} · {elapsed // 60}м {elapsed % 60}с")
+            payload = json.dumps({
+                "model": OLLAMA_MODEL, "messages": conv,
+                "tools": tools, "stream": False, "keep_alive": -1,
+                "options": {"num_ctx": 65536},
+            }).encode()
+            req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=180) as r:
+                resp = json.loads(r.read().decode())
+            msg_resp = resp["message"]
+            conv.append(msg_resp)
+            if not msg_resp.get("tool_calls"):
+                return msg_resp.get("content", "")
+            for tc in msg_resp["tool_calls"]:
+                fn = tc["function"]["name"]
+                args = tc["function"]["arguments"]
+                if isinstance(args, str):
+                    args = json.loads(args)
+                if fn == "load_wiki_file":
+                    fname = args.get("filename", "")
+                    status.append(f"📚 Читаю: {fname}")
+                    path = entries_dict.get(fname)
+                    if path and os.path.exists(path):
+                        with open(path) as f:
+                            tool_result = f.read()
+                        if len(tool_result) > 8000:
+                            tool_result = tool_result[:8000] + "\n...[truncated]"
+                    else:
+                        tool_result = f"File not found: {fname}"
+                elif fn == "search_web":
+                    q = args.get("query", "")
+                    status.append(f"🌐 Ищу: {q[:55]}")
+                    results = _ddg_search(q)
+                    new = [r for r in results if r["url"] not in seen_urls]
+                    for r in new:
+                        seen_urls.add(r["url"])
+                    tool_result = "\n".join(f"{r['url']}: {r['snippet']}" for r in new[:5]) or "No results"
+                elif fn == "fetch_page":
+                    url_arg = args.get("url", "")
+                    status.append(f"📄 Читаю: {url_arg[:60]}")
+                    tool_result = _fetch_page(url_arg) or "Could not fetch"
+                    if len(tool_result) > 5000:
+                        tool_result = tool_result[:5000] + "\n...[truncated]"
+                else:
+                    tool_result = "Unknown tool"
+                logging.info(f"research: {fn}({args}) → {len(tool_result)} chars")
+                conv.append({"role": "tool", "content": tool_result})
+        # Max steps — force synthesis
+        conv.append({"role": "user", "content": "Достаточно. Синтезируй всё в полный структурированный ответ."})
+        status.append(f"🧠 Синтезирую...")
+        payload = json.dumps({"model": OLLAMA_MODEL, "messages": conv, "stream": False, "keep_alive": -1, "options": {"num_ctx": 65536}}).encode()
         req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=300) as r:
+        with urllib.request.urlopen(req, timeout=600) as r:
             return json.loads(r.read().decode())["message"]["content"]
 
     try:
-        result_text = await asyncio.to_thread(_call_ollama)
+        result_text = await asyncio.to_thread(research_loop)
     except Exception as e:
-        await thinking.edit_text(f"🖥 Ollama не отвечает: {e}")
+        done_evt.set()
+        await prog_task
+        await thinking.edit_text(f"🖥 Ошибка: {e}")
         return
+    finally:
+        done_evt.set()
+    await prog_task
     await send_html(thinking, md_to_tg_html(result_text))
 
 # ─── GROUP CHAT ───────────────────────────────────────────
