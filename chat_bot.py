@@ -1095,6 +1095,7 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if isinstance(args, str):
                     args = json.loads(args)
                 source_label = ""
+                full_content = None  # original content for synthesis
                 if fn == "load_wiki_file":
                     fname = args.get("filename", "")
                     step_desc.append(f"📚 Читаю: {fname}")
@@ -1102,7 +1103,12 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     path = entries_dict.get(fname)
                     if path and os.path.exists(path):
                         with open(path) as f:
-                            tool_result = f.read()
+                            full_content = f.read()
+                        # head+tail for conv: preserves intro AND recent/chronological entries
+                        if len(full_content) > 6000:
+                            tool_result = full_content[:5000] + f"\n...[пропущено {len(full_content)-5500} chars]...\n" + full_content[-500:]
+                        else:
+                            tool_result = full_content
                     else:
                         tool_result = f"File not found: {fname}"
                 elif fn == "search_web":
@@ -1122,8 +1128,8 @@ async def handle_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     tool_result = "Unknown tool"
                 logging.info(f"research: {fn}({args}) → {len(tool_result)} chars")
-                # Store full result for conv (model reasoning), label for synthesis notes
-                gathered.append((source_label, tool_result))
+                # gathered: full content for synthesis; conv: head+tail excerpt for model reasoning
+                gathered.append((source_label, full_content if full_content is not None else tool_result))
                 conv.append({"role": "tool", "content": tool_result})
         # Max steps — build compact notes for synthesis (head + tail, no mid-truncation)
         step_desc.append(f"🧠 Синтезирую...")
