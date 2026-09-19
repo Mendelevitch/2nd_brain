@@ -28,13 +28,14 @@ BROWSE_TRIGGERS = [
 ]
 
 
-def ddg_search(query: str, max_results: int = 5) -> str:
+def ddg_search(query: str) -> str:
     try:
         with DDGS() as ddg:
-            results = list(ddg.text(query, max_results=max_results))
+            results = list(ddg.text(query, max_results=3))
         if not results:
             return ""
-        return "\n".join(f"{r['href']}: {r['body']}" for r in results)
+        # Keep snippets short to fit within 4K context
+        return "\n".join(f"- {r['body'][:200]}" for r in results)
     except Exception as e:
         logging.warning(f"DDG search failed: {e}")
         return ""
@@ -42,14 +43,19 @@ def ddg_search(query: str, max_results: int = 5) -> str:
 sessions: dict[int, list] = {}
 
 
+MAX_CTX = 4096  # qwen-local:latest has num_ctx 4096 in its Modelfile
+
+
 def ollama_chat(messages: list) -> str:
     url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
+    # Keep only last 8 messages to stay within context
+    trimmed = messages[-8:] if len(messages) > 8 else messages
     payload = json.dumps({
         "model": OLLAMA_MODEL,
-        "messages": messages,
+        "messages": trimmed,
         "stream": False,
         "keep_alive": -1,
-        "options": {"num_ctx": 8192},
+        "options": {"num_ctx": MAX_CTX},
     }).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=300) as r:
