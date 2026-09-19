@@ -45,14 +45,20 @@ sessions: dict[int, list] = {}
 
 MAX_CTX = 4096  # qwen-local:latest has num_ctx 4096 in its Modelfile
 
+SYSTEM_PROMPT = (
+    "You are a helpful assistant. "
+    "Never output XML tool-call syntax like <tool_call> or <function>. "
+    "When the user's message includes WEB SEARCH RESULTS, use them to answer directly."
+)
+
 
 def ollama_chat(messages: list) -> str:
     url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
-    # Keep only last 8 messages to stay within context
     trimmed = messages[-8:] if len(messages) > 8 else messages
+    full = [{"role": "system", "content": SYSTEM_PROMPT}] + trimmed
     payload = json.dumps({
         "model": OLLAMA_MODEL,
-        "messages": trimmed,
+        "messages": full,
         "stream": False,
         "keep_alive": -1,
         "options": {"num_ctx": MAX_CTX},
@@ -103,7 +109,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         web_snippet = await asyncio.to_thread(ddg_search, text)
 
     if web_snippet:
-        user_content = f"{text}\n\nWEB SEARCH RESULTS:\n{web_snippet}"
+        user_content = f"{text}\n\nWEB SEARCH RESULTS (use these to answer, do not say you have no internet access):\n{web_snippet}"
     else:
         user_content = text
     sessions[user_id].append({"role": "user", "content": user_content})
