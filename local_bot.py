@@ -6,6 +6,7 @@ import time
 import urllib.request
 from datetime import datetime
 
+from duckduckgo_search import DDGS
 from telegram import BotCommand, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -17,6 +18,26 @@ OLLAMA_HOST  = ""  # set in config.py
 OLLAMA_PORT  = 11434
 OLLAMA_MODEL = "gemma4:12b"
 RAW_DIR      = os.path.join(BRAIN_DIR, "raw")
+
+BROWSE_TRIGGERS = [
+    "поищи", "погугли", "найди в сети", "найди в интернете",
+    "что сейчас", "что происходит", "последние новости", "свежие новости",
+    "актуальные новости", "новости про", "новости о",
+    "search for", "look up", "find online", "latest news", "current news",
+    "what's happening", "what is happening",
+]
+
+
+def ddg_search(query: str, max_results: int = 5) -> str:
+    try:
+        with DDGS() as ddg:
+            results = list(ddg.text(query, max_results=max_results))
+        if not results:
+            return ""
+        return "\n".join(f"{r['href']}: {r['body']}" for r in results)
+    except Exception as e:
+        logging.warning(f"DDG search failed: {e}")
+        return ""
 
 sessions: dict[int, list] = {}
 
@@ -68,7 +89,18 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if user_id not in sessions:
         sessions[user_id] = []
-    sessions[user_id].append({"role": "user", "content": text})
+
+    # Auto web search on browse triggers
+    text_lower = text.lower()
+    web_snippet = ""
+    if any(t in text_lower for t in BROWSE_TRIGGERS):
+        web_snippet = await asyncio.to_thread(ddg_search, text)
+
+    if web_snippet:
+        user_content = f"{text}\n\nWEB SEARCH RESULTS:\n{web_snippet}"
+    else:
+        user_content = text
+    sessions[user_id].append({"role": "user", "content": user_content})
 
     thinking = await update.message.reply_text("…")
     start = time.time()
