@@ -111,7 +111,7 @@ user_browse_mode = {}  # user_id -> bool
 user_local_mode = {}   # user_id -> bool
 
 # ─── OLLAMA (local GPU) ───────────────────────────────────
-OLLAMA_HOST  = "100.101.68.17"
+OLLAMA_HOST  = ""  # set in config.py
 OLLAMA_PORT  = 11434
 OLLAMA_MODEL = "gemma4:12b"
 WINDOWS_MAC = ""   # set in config.py

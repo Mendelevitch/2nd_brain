@@ -71,12 +71,27 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sessions[user_id].append({"role": "user", "content": text})
 
     thinking = await update.message.reply_text("…")
+    start = time.time()
+
+    async def tick():
+        while True:
+            await asyncio.sleep(5)
+            elapsed = int(time.time() - start)
+            try:
+                await thinking.edit_text(f"… {elapsed}с")
+            except Exception:
+                pass
+
+    tick_task = asyncio.create_task(tick())
     try:
         reply = await asyncio.to_thread(ollama_chat, sessions[user_id])
     except Exception as e:
+        tick_task.cancel()
         await thinking.edit_text(f"🖥 Ollama недоступна: {e}")
-        sessions[user_id].pop()  # remove unprocessed user message
+        sessions[user_id].pop()
         return
+    finally:
+        tick_task.cancel()
 
     sessions[user_id].append({"role": "assistant", "content": reply})
     await thinking.edit_text(reply)
