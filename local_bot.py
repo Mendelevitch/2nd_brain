@@ -126,7 +126,12 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         tick_task.cancel()
 
     sessions[user_id].append({"role": "assistant", "content": reply})
-    await thinking.edit_text(reply)
+    if len(reply) <= 4096:
+        await thinking.edit_text(reply)
+    else:
+        await thinking.delete()
+        for i in range(0, len(reply), 4096):
+            await update.message.reply_text(reply[i:i + 4096])
 
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
